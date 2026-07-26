@@ -259,6 +259,7 @@ function helpMessage() {
     "/check－立即查詢 Apple 商品與設備數量",
     "/buy－列出符合條件的商品與購買連結",
     "/status－確認即時 Bot 與監控狀態",
+    "/test－傳送一則 Cloudflare 主動通知測試",
     "/link－開啟 Apple 整修 Mac 購買頁",
     "/help－顯示這份說明",
   ].join("\n");
@@ -569,6 +570,37 @@ async function handleTelegramUpdate(update, env) {
     return;
   }
   if (String(message.chat.id) !== String(env.TELEGRAM_CHAT_ID)) {
+    return;
+  }
+
+  const command = normalizeText(message.text)
+    .split(/\s+/, 1)[0]
+    .split("@", 1)[0]
+    .toLowerCase();
+  if (command === "/test") {
+    try {
+      const snapshot = await fetchInventory(fetch);
+      await sendMonitorEvents(env, [
+        {
+          kind: "test",
+          title: "✅ Cloudflare 監控測試成功",
+          message: [
+            "主動通知通道、Apple 解析與 Telegram 均正常。",
+            "",
+            formatInventorySummary(snapshot),
+          ].join("\n"),
+          url: APPLE_REFURB_URL,
+        },
+      ]);
+    } catch (error) {
+      await telegramRequest(env, "sendMessage", {
+        chat_id: message.chat.id,
+        text: [
+          "⚠️ Cloudflare 監控測試失敗",
+          error instanceof Error ? error.message : "未知錯誤",
+        ].join("\n\n"),
+      });
+    }
     return;
   }
 

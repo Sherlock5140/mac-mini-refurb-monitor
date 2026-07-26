@@ -40,6 +40,7 @@ Cloudflare Worker webhook 讓 Bot 能在幾秒內回覆，不需等待下一次 
 - `/check`：立即查詢 Apple 商品與設備數量
 - `/buy`：列出符合條件的商品與直接購買連結
 - `/status`：確認即時 Bot、Apple 頁面與排程監控狀態
+- `/test`：傳送一則與正式事件相同路徑的主動通知測試
 - `/link`：顯示 Apple 台灣整修 Mac 購買頁
 - `/help`：顯示指令說明
 

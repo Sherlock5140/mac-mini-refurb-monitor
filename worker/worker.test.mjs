@@ -118,6 +118,12 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
+test("lists the active notification test command", async () => {
+  const reply = await replyForCommand("/help");
+
+  assert.match(reply, /\/test－傳送一則 Cloudflare 主動通知測試/);
+});
+
 test("rejects a product page that contains no Mac", () => {
   const iphoneHtml = htmlFor(
     product({
