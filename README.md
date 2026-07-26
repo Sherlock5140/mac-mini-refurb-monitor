@@ -46,10 +46,30 @@ Bot Token 相當於密碼，不得貼在 issue、程式碼或 workflow log。
 
 Telegram 與 ntfy 可以同時啟用；完全未設定通知 Secret 時 workflow 會明確失敗，避免商品狀態改變卻沒有通知。
 
+## Telegram 即時指令
+
+Cloudflare Worker webhook 讓 Bot 能在幾秒內回覆，不需等待下一次 GitHub Actions 排程：
+
+- `/check`：立即查詢 Apple 商品與設備數量
+- `/buy`：列出符合條件的商品與直接購買連結
+- `/status`：確認即時 Bot、Apple 頁面與排程監控狀態
+- `/link`：顯示 Apple 台灣整修 Mac 購買頁
+- `/help`：顯示指令說明
+
+Worker 僅接受設定在 `TELEGRAM_CHAT_ID` 的私人帳號，並使用 Telegram webhook secret 驗證來源。商品通知與查詢結果都會附上 Apple 購買連結。
+
+目前部署：
+
+- Worker：<https://mac-mini-refurb-monitor-bot.sherlock5140-mac-monitor.workers.dev>
+- 健康檢查：<https://mac-mini-refurb-monitor-bot.sherlock5140-mac-monitor.workers.dev/health>
+
+Cloudflare Workers Free 方案提供每日 100,000 次請求額度，私人 Bot 的正常查詢用量不需額外費用。
+
 ## 本機驗證
 
 ```bash
 python3 -m unittest discover -s tests -v
+node --test worker/*.test.mjs
 python3 -m monitor.cli --state-file /tmp/mac-mini-monitor-state.json
 ```
 

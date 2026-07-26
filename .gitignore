@@ -1,4 +1,8 @@
+node_modules/
 __pycache__/
 *.py[cod]
-.DS_Store
-.venv/
+.wrangler/
+.dev.vars
+.env
+.env.*
+secrets.json
