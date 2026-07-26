@@ -59,7 +59,7 @@ jobs:
       - name: Persist state changes
         shell: bash
         run: |
-          if git diff --quiet -- state/products.json; then
+          if [[ -z "$(git status --porcelain -- state/products.json)" ]]; then
             echo "Inventory state is unchanged."
             exit 0
           fi
