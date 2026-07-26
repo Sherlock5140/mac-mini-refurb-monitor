@@ -17,6 +17,7 @@ import {
   formatPchomeSummary,
   formatPurchaseMessage,
   parseAppleInventory,
+  parseWithAiDiagnostics,
   parseCoupangInventory,
   parseCoupangSonyInventory,
   parseCostcoInventory,
@@ -231,6 +232,53 @@ test("parses broad Mac counts while filtering target Mac minis", () => {
     "MacBook Pro": 1,
     iMac: 1,
   });
+});
+
+test("does not spend Workers AI quota when deterministic parsing succeeds", async () => {
+  let aiCalls = 0;
+  const snapshot = await parseWithAiDiagnostics({
+    ai: {
+      async run() {
+        aiCalls += 1;
+        return { response: "{}" };
+      },
+    },
+    source: "Apple",
+    html: sampleHtml,
+    parser: parseAppleInventory,
+  });
+
+  assert.equal(aiCalls, 0);
+  assert.equal(snapshot.targetProducts.length, 1);
+});
+
+test("uses Workers AI only to diagnose a deterministic parser failure", async () => {
+  let aiCalls = 0;
+  const ai = {
+    async run(model, input) {
+      aiCalls += 1;
+      assert.equal(model, "@cf/meta/llama-3.2-1b-instruct");
+      assert.equal(input.max_tokens, 80);
+      return {
+        response: JSON.stringify({
+          state: "changed",
+          confidence: 0.92,
+          summary: "頁面結構可能已變更",
+        }),
+      };
+    },
+  };
+
+  await assert.rejects(
+    parseWithAiDiagnostics({
+      ai,
+      source: "Apple",
+      html: "<html><body>Mac 商品清單載入格式已更新</body></html>",
+      parser: parseAppleInventory,
+    }),
+    /AI 輔助判讀：頁面結構可能已變更/,
+  );
+  assert.equal(aiCalls, 1);
 });
 
 test("formats inventory and purchase links", () => {
