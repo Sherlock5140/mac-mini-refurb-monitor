@@ -1,0 +1,70 @@
+name: Monitor Apple M4 Mac mini
+
+on:
+  schedule:
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      send_test:
+        description: Send a test ntfy notification
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-mini-refurb-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify NTFY_TOPIC
+        shell: bash
+        run: |
+          if [[ -z "$NTFY_TOPIC" ]]; then
+            echo "::error::Set the NTFY_TOPIC repository secret before running the monitor."
+            exit 1
+          fi
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check Apple inventory
+        shell: bash
+        run: |
+          args=(--state-file state/products.json)
+          if [[ "${{ inputs.send_test }}" == "true" ]]; then
+            args+=(--test-notification)
+          fi
+          python -m monitor.cli "${args[@]}"
+
+      - name: Persist state changes
+        shell: bash
+        run: |
+          if git diff --quiet -- state/products.json; then
+            echo "Inventory state is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/products.json
+          git commit -m "Update Mac mini inventory state"
+          git push origin HEAD:${GITHUB_REF_NAME}
