@@ -48,6 +48,8 @@ Worker 僅接受設定在 `TELEGRAM_CHAT_ID` 的私人帳號，並使用 Telegra
 
 Cloudflare 後台另提供受 `ADMIN_TEST_TOKEN` 保護的
 `POST /admin/test`，可在不開啟 Telegram 的情況下測試手機推播。
+測試與健康通知會優先顯示目標商品、監控條件及頁面概況，
+只保留一個購買連結並關閉大型連結預覽。
 
 目前部署：
 

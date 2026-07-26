@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   APPLE_REFURB_URL,
+  buildTestNotificationEvent,
   default as worker,
   formatInventorySummary,
   formatPurchaseMessage,
@@ -77,11 +78,36 @@ test("parses broad Mac counts while filtering target Mac minis", () => {
 
 test("formats inventory and purchase links", () => {
   const snapshot = parseAppleInventory(sampleHtml);
+  const summary = formatInventorySummary(snapshot);
 
-  assert.match(formatInventorySummary(snapshot), /Mac mini：1 項/);
-  assert.match(formatInventorySummary(snapshot), new RegExp(APPLE_REFURB_URL));
+  assert.match(summary, /符合條件：1 項/);
+  assert.match(summary, /Mac mini 總數：1 項/);
+  assert.match(summary, /• MacBook Pro：1 項/);
+  assert.match(summary, new RegExp(APPLE_REFURB_URL));
+  assert.ok(
+    summary.indexOf("🎯 監控結果") <
+      summary.indexOf("📊 頁面概況"),
+  );
   assert.match(formatPurchaseMessage(snapshot), /NT\$17,000/);
   assert.match(formatPurchaseMessage(snapshot), /fminita\/a/);
+});
+
+test("backend test notifications contain one compact purchase link", () => {
+  const event = buildTestNotificationEvent(
+    parseAppleInventory(sampleHtml),
+  );
+  const finalText = `${event.title}\n\n${event.message}\n\n${event.url}`;
+  const linkMatches = finalText.match(
+    new RegExp(APPLE_REFURB_URL, "g"),
+  );
+
+  assert.equal(linkMatches.length, 1);
+  assert.equal(event.disablePreview, true);
+  assert.doesNotMatch(event.message, /購買頁/);
+  assert.ok(
+    event.message.indexOf("✅ 主動通知通道") <
+      event.message.indexOf("🎯 監控結果"),
+  );
 });
 
 test("answers check commands with live Apple data", async () => {
@@ -93,7 +119,8 @@ test("answers check commands with live Apple data", async () => {
 
   const reply = await replyForCommand("/check", fakeFetch);
 
-  assert.match(reply, /符合 M4 mini 256／512GB：1 項/);
+  assert.match(reply, /符合條件：1 項/);
+  assert.match(reply, /標準版 M4｜256／512GB SSD/);
   assert.match(reply, /購買頁/);
 });
 

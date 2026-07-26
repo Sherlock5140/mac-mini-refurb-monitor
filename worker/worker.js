@@ -197,22 +197,32 @@ function taipeiDate() {
   }).format(new Date());
 }
 
-export function formatInventorySummary(snapshot) {
-  const devices = snapshot.deviceCounts
-    .map(([family, count]) => `${family} ${count} 項`)
-    .join("、");
-  return [
-    "🔎 Apple 整修 Mac 即時查詢",
+export function formatInventorySummary(
+  snapshot,
+  { includePurchaseLink = true } = {},
+) {
+  const devices = snapshot.deviceCounts.map(
+    ([family, count]) => `• ${family}：${count} 項`,
+  );
+  const lines = [
+    "🔎 M4 Mac mini 即時查詢",
     "",
-    `全部商品：${snapshot.totalProductCount} 項`,
-    `Mac：${snapshot.macProductCount} 項`,
-    `設備：${devices || "目前未找到 Mac"}`,
-    `Mac mini：${snapshot.macMiniCount} 項`,
-    `符合 M4 mini 256／512GB：${snapshot.targetProducts.length} 項`,
+    "🎯 監控結果",
+    `符合條件：${snapshot.targetProducts.length} 項`,
+    `Mac mini 總數：${snapshot.macMiniCount} 項`,
+    "",
+    "⚙️ 監控條件",
+    "標準版 M4｜256／512GB SSD｜排除 M4 Pro／Max",
+    "",
+    "📊 頁面概況",
+    `Mac 商品：${snapshot.macProductCount} 項（全部商品 ${snapshot.totalProductCount} 項）`,
+    ...(devices.length ? devices : ["• 目前未找到 Mac"]),
     `查詢時間：${taipeiTime()}`,
-    "",
-    `購買頁：${APPLE_REFURB_URL}`,
-  ].join("\n");
+  ];
+  if (includePurchaseLink) {
+    lines.push("", `🛒 購買頁：${APPLE_REFURB_URL}`);
+  }
+  return lines.join("\n");
 }
 
 export function formatPurchaseMessage(snapshot) {
@@ -358,7 +368,7 @@ async function sendMonitorEvents(env, events) {
         chat_id: env.TELEGRAM_CHAT_ID,
         text,
         link_preview_options: {
-          is_disabled: false,
+          is_disabled: Boolean(event.disablePreview),
         },
       });
     } catch (error) {
@@ -369,21 +379,29 @@ async function sendMonitorEvents(env, events) {
   }
 }
 
+export function buildTestNotificationEvent(snapshot) {
+  return {
+    kind: "test",
+    title: "✅ Cloudflare 後台推播測試成功",
+    message: [
+      "Cloudflare 直接發送｜未經 Telegram 指令",
+      "",
+      "✅ 主動通知通道",
+      "✅ Apple 頁面解析",
+      "✅ Telegram 推播",
+      "",
+      formatInventorySummary(snapshot, {
+        includePurchaseLink: false,
+      }),
+    ].join("\n"),
+    url: APPLE_REFURB_URL,
+    disablePreview: true,
+  };
+}
+
 async function sendTestNotification(env) {
   const snapshot = await fetchInventory(fetch);
-  await sendMonitorEvents(env, [
-    {
-      kind: "test",
-      title: "✅ Cloudflare 後台推播測試成功",
-      message: [
-        "這則訊息由 Cloudflare 直接發送，未經 Telegram 指令觸發。",
-        "主動通知通道、Apple 解析與 Telegram 均正常。",
-        "",
-        formatInventorySummary(snapshot),
-      ].join("\n"),
-      url: APPLE_REFURB_URL,
-    },
-  ]);
+  await sendMonitorEvents(env, [buildTestNotificationEvent(snapshot)]);
   return snapshot;
 }
 
@@ -526,8 +544,11 @@ export async function runScheduledMonitor(env) {
       events.push({
         kind: "heartbeat",
         title: "💚 Mac mini 監控正常",
-        message: formatInventorySummary(snapshot),
+        message: formatInventorySummary(snapshot, {
+          includePurchaseLink: false,
+        }),
         url: APPLE_REFURB_URL,
+        disablePreview: true,
       });
       updated.lastHeartbeatDate = today;
     } else if (!original.initialized) {
@@ -629,7 +650,7 @@ async function handleTelegramUpdate(update, env) {
     chat_id: message.chat.id,
     text: reply,
     link_preview_options: {
-      is_disabled: false,
+      is_disabled: command !== "/buy",
     },
   });
 }
