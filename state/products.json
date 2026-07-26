@@ -1,7 +1,7 @@
 {
   "consecutive_errors": 0,
-  "initialized": false,
-  "last_heartbeat_date": null,
+  "initialized": true,
+  "last_heartbeat_date": "2026-07-26",
   "products": {},
   "version": 1
 }
