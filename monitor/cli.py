@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from .notify import NotificationError, publish_ntfy, publish_telegram
-from .parser import parse_products
+from .parser import parse_inventory
 from .state import (
     Event,
     apply_error,
@@ -21,6 +21,7 @@ from .state import (
     empty_state,
     heartbeat_event,
     recovery_event,
+    test_event,
 )
 
 
@@ -115,41 +116,27 @@ def run(
         )
         return 2
 
-    if send_test:
-        _send_all(
-            [
-                Event(
-                    kind="test",
-                    title="Mac mini 監控測試成功",
-                    message="GitHub Actions 已能正常傳送監控通知。",
-                    priority=4,
-                    tags=("white_check_mark", "computer"),
-                )
-            ],
-            ntfy_topic=ntfy_topic,
-            telegram_bot_token=telegram_bot_token,
-            telegram_chat_id=telegram_chat_id,
-        )
-        print("測試通知已發送")
-
     state = load_state(state_path)
     previous_errors = int(state.get("consecutive_errors", 0))
     now = datetime.now(TAIPEI)
     now_iso = now.isoformat(timespec="seconds")
 
     try:
-        products = parse_products(fetch_html())
+        inventory = parse_inventory(fetch_html())
+        products = list(inventory.target_products)
         updated, events = apply_inventory(state, products, now_iso)
         recovered = recovery_event(previous_errors)
         if recovered:
             events.insert(0, recovered)
+        if send_test:
+            events.insert(0, test_event(inventory))
 
         today = now.date().isoformat()
         if (
             state.get("initialized")
             and updated.get("last_heartbeat_date") != today
         ):
-            events.append(heartbeat_event())
+            events.append(heartbeat_event(inventory))
             updated["last_heartbeat_date"] = today
         elif not state.get("initialized"):
             updated["last_heartbeat_date"] = today
@@ -162,7 +149,11 @@ def run(
         )
         save_state(state_path, updated)
         print(
-            f"監控成功：解析到 {len(products)} 項符合條件的商品，"
+            "監控成功："
+            f"全部商品 {inventory.total_product_count} 項，"
+            f"Mac {inventory.mac_product_count} 項，"
+            f"Mac mini {inventory.mac_mini_count} 項，"
+            f"符合條件 {len(products)} 項，"
             f"事件 {len(events)} 項。"
         )
         return 0

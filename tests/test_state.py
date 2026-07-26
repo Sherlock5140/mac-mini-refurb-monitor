@@ -1,7 +1,13 @@
 import unittest
 
-from monitor.parser import Product
-from monitor.state import apply_error, apply_inventory, empty_state
+from monitor.parser import InventorySnapshot, Product
+from monitor.state import (
+    apply_error,
+    apply_inventory,
+    empty_state,
+    heartbeat_event,
+    test_event as build_test_event,
+)
 
 
 def sample(product_id="FTESTTA-A", price=17000):
@@ -16,7 +22,31 @@ def sample(product_id="FTESTTA-A", price=17000):
     )
 
 
+def inventory_snapshot():
+    return InventorySnapshot(
+        target_products=(sample(),),
+        total_product_count=43,
+        mac_product_count=39,
+        mac_mini_count=1,
+        device_counts=(
+            ("Mac mini", 1),
+            ("MacBook Pro", 20),
+            ("iMac", 18),
+        ),
+    )
+
+
 class StateTests(unittest.TestCase):
+    def test_health_events_explain_visible_device_types(self):
+        snapshot = inventory_snapshot()
+
+        for event in (heartbeat_event(snapshot), build_test_event(snapshot)):
+            self.assertIn("全部商品：43 項", event.message)
+            self.assertIn("Mac：39 項", event.message)
+            self.assertIn("MacBook Pro 20 項", event.message)
+            self.assertIn("iMac 18 項", event.message)
+            self.assertIn("符合 M4 mini 256／512GB：1 項", event.message)
+
     def test_first_run_creates_baseline_without_alert(self):
         state, events = apply_inventory(empty_state(), [sample()], "2026-07-26T10:00:00+08:00")
         self.assertTrue(state["initialized"])

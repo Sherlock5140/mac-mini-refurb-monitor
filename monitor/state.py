@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from .parser import Product
+from .parser import InventorySnapshot, Product
 
 
 @dataclass(frozen=True)
@@ -170,11 +170,37 @@ def recovery_event(previous_error_count: int) -> Event | None:
     )
 
 
-def heartbeat_event() -> Event:
+def _inventory_summary(snapshot: InventorySnapshot) -> str:
+    devices = "、".join(
+        f"{family} {count} 項" for family, count in snapshot.device_counts
+    )
+    if not devices:
+        devices = "目前未找到 Mac"
+    return (
+        "Apple 台灣整修品頁面解析正常。\n"
+        f"全部商品：{snapshot.total_product_count} 項\n"
+        f"Mac：{snapshot.mac_product_count} 項\n"
+        f"設備：{devices}\n"
+        f"Mac mini：{snapshot.mac_mini_count} 項\n"
+        f"符合 M4 mini 256／512GB：{len(snapshot.target_products)} 項"
+    )
+
+
+def test_event(snapshot: InventorySnapshot) -> Event:
+    return Event(
+        kind="test",
+        title="Mac mini 監控測試成功",
+        message=_inventory_summary(snapshot),
+        priority=4,
+        tags=("white_check_mark", "computer"),
+    )
+
+
+def heartbeat_event(snapshot: InventorySnapshot) -> Event:
     return Event(
         kind="heartbeat",
         title="Mac mini 監控正常",
-        message="Apple 台灣整修品監控仍在正常執行。",
+        message=_inventory_summary(snapshot),
         priority=2,
         tags=("green_heart", "computer"),
     )

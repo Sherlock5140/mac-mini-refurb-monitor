@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
 import json
@@ -32,6 +33,17 @@ class Product:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class InventorySnapshot:
+    """Parsed target products plus broad Mac-page health statistics."""
+
+    target_products: tuple[Product, ...]
+    total_product_count: int
+    mac_product_count: int
+    mac_mini_count: int
+    device_counts: tuple[tuple[str, int], ...]
 
 
 class _JsonLdParser(HTMLParser):
@@ -142,8 +154,31 @@ def _target_product(product: dict[str, Any]) -> Product | None:
     )
 
 
-def parse_products(html: str) -> list[Product]:
-    """Return matching M4 Mac minis, raising if the page structure is invalid."""
+def _device_family(name: str) -> str | None:
+    lowered = name.lower()
+    if "mac mini" in lowered:
+        return "Mac mini"
+    if "macbook pro" in lowered:
+        return "MacBook Pro"
+    if "macbook air" in lowered:
+        return "MacBook Air"
+    if "macbook neo" in lowered:
+        return "MacBook Neo"
+    if "mac studio" in lowered:
+        return "Mac Studio"
+    if "mac pro" in lowered:
+        return "Mac Pro"
+    if "imac" in lowered:
+        return "iMac"
+    if "macbook" in lowered:
+        return "MacBook"
+    if "mac" in lowered:
+        return "其他 Mac"
+    return None
+
+
+def parse_inventory(html: str) -> InventorySnapshot:
+    """Parse target products and broad device counts from the Apple page."""
     parser = _JsonLdParser()
     parser.feed(html)
     all_products = _product_documents(parser.documents)
@@ -153,8 +188,47 @@ def parse_products(html: str) -> list[Product]:
         )
 
     matches: dict[str, Product] = {}
+    device_counts: Counter[str] = Counter()
     for raw_product in all_products:
+        family = _device_family(_normalize_text(raw_product.get("name")))
+        if family is not None:
+            device_counts[family] += 1
         product = _target_product(raw_product)
         if product is not None:
             matches[product.product_id] = product
-    return sorted(matches.values(), key=lambda item: item.product_id)
+
+    if not device_counts:
+        raise ParseError(
+            "Apple 整修 Mac 頁面有 Product 資料，但沒有辨識到任何 Mac 設備"
+        )
+
+    ordered_families = (
+        "Mac mini",
+        "MacBook Pro",
+        "MacBook Air",
+        "MacBook Neo",
+        "MacBook",
+        "iMac",
+        "Mac Studio",
+        "Mac Pro",
+        "其他 Mac",
+    )
+    devices = tuple(
+        (family, device_counts[family])
+        for family in ordered_families
+        if device_counts[family]
+    )
+    return InventorySnapshot(
+        target_products=tuple(
+            sorted(matches.values(), key=lambda item: item.product_id)
+        ),
+        total_product_count=len(all_products),
+        mac_product_count=sum(device_counts.values()),
+        mac_mini_count=device_counts["Mac mini"],
+        device_counts=devices,
+    )
+
+
+def parse_products(html: str) -> list[Product]:
+    """Return matching M4 Mac minis, raising if the page structure is invalid."""
+    return list(parse_inventory(html).target_products)

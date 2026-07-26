@@ -12,10 +12,12 @@
 
 - GitHub Actions 在每小時 `02、07、12……57` 分執行。
 - 從 Apple 頁面的 `application/ld+json` Product 資料解析商品。
+- 每次都統計全部商品、所有 Mac、Mac mini 與符合條件的商品數量。
+- 設備摘要會簡單列出 MacBook Pro、MacBook Air、iMac、Mac mini 等類型。
 - 第一次成功執行只建立基準，不發送「新上架」通知。
-- 找不到目標商品是正常狀態；找不到任何 Product 結構才視為解析錯誤。
+- 找不到目標 Mac mini 是正常狀態；找不到 Product 結構或無法辨識任何 Mac 才視為解析錯誤。
 - 狀態保存在 `state/products.json`，只有狀態改變時才由 workflow 提交。
-- 連續錯誤、錯誤恢復與每日一次健康心跳都會通知。
+- 連續錯誤、錯誤恢復與每日一次健康心跳都會通知；健康通知會附上即時設備統計。
 
 > GitHub Actions 的 5 分鐘是最短排程間隔，不是準時保證；高負載時可能延遲或漏跑。
 
@@ -68,4 +70,4 @@ python3 -m monitor.cli \
   --test-notification
 ```
 
-測試通知不會製造假商品，也不會重設既有商品狀態。
+測試通知會即時解析 Apple 頁面並附上設備統計，不會製造假商品，也不會重設既有商品狀態。
