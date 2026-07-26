@@ -9,10 +9,12 @@ import {
   buildTestNotificationEvent,
   default as worker,
   formatInventorySummary,
+  formatCoupangSummary,
   formatCostcoSummary,
   formatPchomeSummary,
   formatPurchaseMessage,
   parseAppleInventory,
+  parseCoupangInventory,
   parseCostcoInventory,
   parsePchomeInventory,
   replyForCommand,
@@ -144,6 +146,49 @@ const pchomeHtml = [
   }),
 ].join("");
 
+function coupangCard({
+  name,
+  vendorItemId,
+  productId,
+  price,
+  available = true,
+}) {
+  return [
+    `<li class="ProductUnit_productUnit__Qd6sv" data-id="${vendorItemId}">`,
+    `<a href="/products/${productId}?itemId=${productId}&amp;vendorItemId=${vendorItemId}">`,
+    `<div class="ProductUnit_productNameV2__cV9cw">${name}</div>`,
+    '<div class="PriceArea_priceArea__NntJz">',
+    available
+      ? `<span translate="no">$${price.toLocaleString("en-US")}</span>`
+      : "<span>暫時缺貨</span>",
+    "</div>",
+    "</a>",
+    "</li>",
+  ].join("");
+}
+
+const coupangHtml = [
+  coupangCard({
+    name: "Apple Mac mini M4 10核心CPU/10核心GPU, 銀色, 16GB, 512GB, MAC OS, MU9E3TA/A",
+    vendorItemId: "562856189722625",
+    productId: "563199703220224",
+    price: 33900,
+  }),
+  coupangCard({
+    name: "Apple Mac mini M4 Pro 12核心CPU, 銀色, 24GB, 512GB, MAC OS",
+    vendorItemId: "562856189722626",
+    productId: "563199703220225",
+    price: 54900,
+  }),
+  coupangCard({
+    name: "Apple Mac mini M4 10核心CPU, 銀色, 16GB, 256GB, MAC OS",
+    vendorItemId: "562856189722627",
+    productId: "563199703220226",
+    price: 25900,
+    available: false,
+  }),
+].join("");
+
 test("parses broad Mac counts while filtering target Mac minis", () => {
   const snapshot = parseAppleInventory(sampleHtml);
 
@@ -241,6 +286,34 @@ test("formats PChome live stock and purchase links", () => {
   assert.ok(summary.includes(PCHOME_SEARCH_URL));
 });
 
+test("parses Coupang rendered cards and excludes sold-out or Pro models", () => {
+  const snapshot = parseCoupangInventory(coupangHtml);
+
+  assert.equal(snapshot.totalProductCount, 3);
+  assert.equal(snapshot.macProductCount, 3);
+  assert.equal(snapshot.macMiniCount, 3);
+  assert.equal(snapshot.targetProducts.length, 1);
+  assert.deepEqual(snapshot.targetProducts[0], {
+    sku: "COUPANG-562856189722625",
+    name: "Apple Mac mini M4 10核心CPU/10核心GPU, 銀色, 16GB, 512GB, MAC OS, MU9E3TA/A",
+    storageGb: 512,
+    memoryGb: 16,
+    priceTwd: 33900,
+    url: "https://www.tw.coupang.com/products/563199703220224?itemId=563199703220224&vendorItemId=562856189722625",
+  });
+});
+
+test("formats Coupang live stock and purchase links", () => {
+  const summary = formatCoupangSummary(
+    parseCoupangInventory(coupangHtml),
+  );
+
+  assert.match(summary, /酷澎 M4 Mac mini 即時查詢/);
+  assert.match(summary, /符合條件且有貨：1 項/);
+  assert.match(summary, /512GB｜NT\$33,900｜有貨/);
+  assert.ok(summary.includes(COUPANG_SEARCH_URL));
+});
+
 test("backend test notifications contain one compact purchase link", () => {
   const event = buildTestNotificationEvent(
     parseAppleInventory(sampleHtml),
@@ -300,11 +373,24 @@ test("answers PChome commands with live PChome data", async () => {
   assert.match(reply, /符合條件且有貨：1 項/);
 });
 
-test("explains Coupang server blocking without fake live data", async () => {
-  const reply = await replyForCommand("/coupang");
+test("answers Coupang commands through Cloudflare Browser Run", async () => {
+  const fakeBrowser = {
+    quickAction: async () =>
+      Response.json({
+        success: true,
+        result: coupangHtml,
+        meta: { status: 200 },
+      }),
+  };
+  const reply = await replyForCommand(
+    "/coupang",
+    fetch,
+    null,
+    fakeBrowser,
+  );
 
-  assert.match(reply, /暫未啟用自動監控/);
-  assert.match(reply, /HTTP 403/);
+  assert.match(reply, /符合條件且有貨：1 項/);
+  assert.match(reply, /NT\$33,900/);
   assert.ok(reply.includes(COUPANG_SEARCH_URL));
 });
 
@@ -326,7 +412,8 @@ test("reports Cloudflare scheduler state in status commands", async () => {
 
   assert.match(reply, /Apple 排程：正常/);
   assert.match(reply, /Costco 排程：等待第一次執行/);
-  assert.match(reply, /每 5 分鐘同時檢查三個來源/);
+  assert.match(reply, /酷澎 排程：等待第一次執行/);
+  assert.match(reply, /每 5 分鐘同時檢查四個來源/);
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
@@ -336,7 +423,7 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/test－傳送一則 Cloudflare 主動通知測試/);
   assert.match(reply, /\/costco－立即查詢 Costco 台灣庫存與價格/);
   assert.match(reply, /\/pchome－立即查詢 PChome 24h 庫存與價格/);
-  assert.match(reply, /\/coupang－開啟酷澎搜尋頁並顯示監控限制/);
+  assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
 });
 
 test("rejects a product page that contains no Mac", () => {

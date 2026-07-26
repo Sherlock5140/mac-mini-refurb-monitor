@@ -15,6 +15,7 @@ const PCHOME_SEARCH_URL =
 const PCHOME_ORIGIN = "https://24h.pchome.com.tw";
 const COUPANG_SEARCH_URL =
   "https://www.tw.coupang.com/srp/mac-mini?q=mac%20mini%20m4";
+const COUPANG_ORIGIN = "https://www.tw.coupang.com";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const SOURCE_TABLES = {
   apple: {
@@ -28,6 +29,10 @@ const SOURCE_TABLES = {
   pchome: {
     state: "pchome_monitor_state",
     runs: "pchome_monitor_runs",
+  },
+  coupang: {
+    state: "coupang_monitor_state",
+    runs: "coupang_monitor_runs",
   },
 };
 
@@ -394,6 +399,113 @@ export function parsePchomeInventory(html) {
   };
 }
 
+function coupangTargetProduct(product) {
+  if (
+    !/\bapple\s+mac\s+mini\b/i.test(product.name) ||
+    !/\bM4\b/i.test(product.name) ||
+    /\bM4\s*(?:Pro|Max)\b/i.test(product.name) ||
+    !product.available ||
+    !Number.isFinite(product.priceTwd)
+  ) {
+    return null;
+  }
+
+  const gbValues = [
+    ...product.name.matchAll(/(?<!\d)(\d+)\s*GB\b/gi),
+  ].map((match) => Number(match[1]));
+  const storage = gbValues.find((value) => [256, 512].includes(value));
+  if (!storage) {
+    return null;
+  }
+  const memory = gbValues.find((value) => value !== storage) ?? null;
+  return {
+    sku: `COUPANG-${product.sku}`,
+    name: product.name,
+    storageGb: storage,
+    memoryGb: memory,
+    priceTwd: product.priceTwd,
+    url: product.url,
+  };
+}
+
+export function parseCoupangInventory(html) {
+  const starts = [
+    ...html.matchAll(
+      /<li\b[^>]*\bclass=["'][^"']*\bProductUnit_productUnit__[^"']*["'][^>]*>/gi,
+    ),
+  ];
+  if (starts.length === 0) {
+    throw new Error("酷澎搜尋頁沒有辨識到任何商品卡片");
+  }
+
+  const products = [];
+  for (let index = 0; index < starts.length; index += 1) {
+    const card = html.slice(
+      starts[index].index,
+      starts[index + 1]?.index ?? html.length,
+    );
+    const skuMatch = starts[index][0].match(
+      /\bdata-id=["'](\d+)["']/i,
+    );
+    const linkMatch = card.match(
+      /<a\b[^>]*\bhref=["']([^"']+)["']/i,
+    );
+    const nameMatch = card.match(
+      /<div\b[^>]*\bclass=["'][^"']*\bProductUnit_productName[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    );
+    const priceMatch = card.match(
+      /<span\b[^>]*\btranslate=["']no["'][^>]*>\s*\$\s*([\d,]+)\s*<\/span>/i,
+    );
+    const name = decodeHtml(
+      String(nameMatch?.[1] ?? "").replace(/<[^>]*>/g, ""),
+    );
+    const path = decodeHtml(linkMatch?.[1]);
+    if (!skuMatch || !name || !path) {
+      continue;
+    }
+    const priceTwd = priceMatch
+      ? Number(priceMatch[1].replaceAll(",", ""))
+      : null;
+    products.push({
+      sku: skuMatch[1],
+      name,
+      url: new URL(path, COUPANG_ORIGIN).href,
+      priceTwd,
+      available:
+        Number.isFinite(priceTwd) &&
+        !/(?:暫時缺貨|已售完|售罄|sold[\s_-]*out)/i.test(card),
+    });
+  }
+  if (products.length === 0) {
+    throw new Error("酷澎商品卡片缺少名稱、連結或商品編號");
+  }
+
+  const targets = new Map();
+  for (const product of products) {
+    const target = coupangTargetProduct(product);
+    if (target) {
+      targets.set(target.sku, target);
+    }
+  }
+  const macProducts = products.filter((product) =>
+    /\bApple\s+Mac\b/i.test(product.name),
+  );
+  const macMinis = products.filter((product) =>
+    /\bApple\s+Mac\s+mini\b/i.test(product.name),
+  );
+  return {
+    totalProductCount: products.length,
+    macProductCount: macProducts.length,
+    macMiniCount: macMinis.length,
+    deviceCounts: macMinis.length
+      ? [["Mac mini", macMinis.length]]
+      : [],
+    targetProducts: [...targets.values()].sort((a, b) =>
+      a.sku.localeCompare(b.sku),
+    ),
+  };
+}
+
 function taipeiTime(value = new Date()) {
   return new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -537,6 +649,36 @@ export function formatPchomeSummary(
   return lines.join("\n");
 }
 
+export function formatCoupangSummary(
+  snapshot,
+  { includePurchaseLink = true } = {},
+) {
+  const productLines = snapshot.targetProducts.length
+    ? snapshot.targetProducts.flatMap((product, index) => [
+        `${index + 1}. ${product.storageGb}GB｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
+        product.url,
+      ])
+    : ["目前沒有符合條件且有貨的商品。"];
+  const lines = [
+    "🔎 酷澎 M4 Mac mini 即時查詢",
+    "",
+    "🎯 監控結果",
+    `符合條件且有貨：${snapshot.targetProducts.length} 項`,
+    `搜尋頁 Apple Mac mini：${snapshot.macMiniCount} 項`,
+    "",
+    "⚙️ 監控條件",
+    "標準版 M4｜256／512GB｜排除 M4 Pro／Max",
+    "",
+    ...productLines,
+    "",
+    `查詢時間：${taipeiTime()}`,
+  ];
+  if (includePurchaseLink) {
+    lines.push("", `🛒 酷澎搜尋頁：${COUPANG_SEARCH_URL}`);
+  }
+  return lines.join("\n");
+}
+
 function helpMessage() {
   return [
     "🤖 M4 Mac mini 監控指令",
@@ -544,9 +686,9 @@ function helpMessage() {
     "/check－立即查詢 Apple 商品與設備數量",
     "/costco－立即查詢 Costco 台灣庫存與價格",
     "/pchome－立即查詢 PChome 24h 庫存與價格",
-    "/coupang－開啟酷澎搜尋頁並顯示監控限制",
+    "/coupang－立即查詢酷澎庫存、價格與購買連結",
     "/buy－列出符合條件的商品與購買連結",
-    "/status－確認 Apple 與 Costco 排程狀態",
+    "/status－確認四個購物站的排程狀態",
     "/test－傳送一則 Cloudflare 主動通知測試",
     "/link－開啟 Apple 整修 Mac 購買頁",
     "/help－顯示這份說明",
@@ -613,6 +755,40 @@ async function fetchPchomeInventory(fetchImpl) {
   return parsePchomeInventory(await response.text());
 }
 
+async function fetchCoupangInventory(browser) {
+  if (!browser?.quickAction) {
+    throw new Error("Cloudflare Browser Run 尚未設定");
+  }
+  const response = await browser.quickAction("content", {
+    url: COUPANG_SEARCH_URL,
+    gotoOptions: {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    },
+    rejectResourceTypes: [
+      "image",
+      "media",
+      "font",
+      "stylesheet",
+      "script",
+    ],
+  });
+  if (!response.ok) {
+    throw new Error(`酷澎 Browser Run HTTP ${response.status}`);
+  }
+  const payload = await response.json().catch(() => null);
+  if (
+    payload?.success !== true ||
+    payload?.meta?.status !== 200 ||
+    typeof payload?.result !== "string"
+  ) {
+    throw new Error(
+      `酷澎頁面載入失敗（HTTP ${payload?.meta?.status ?? "unknown"}）`,
+    );
+  }
+  return parseCoupangInventory(payload.result);
+}
+
 function scheduleStatusLine(label, monitor) {
   if (!monitor?.lastSuccessAt) {
     return `${label} 排程：等待第一次執行`;
@@ -628,6 +804,7 @@ export async function replyForCommand(
   text,
   fetchImpl = fetch,
   statusProvider = null,
+  browser = null,
 ) {
   const rawCommand = normalizeText(text).split(/\s+/, 1)[0] || "";
   const command = rawCommand.split("@", 1)[0].toLowerCase();
@@ -653,7 +830,10 @@ export async function replyForCommand(
       scheduleStatusLine("Costco", costcoMonitor),
       "",
       scheduleStatusLine("PChome", monitor?.pchome),
-      "自動監控：Cloudflare 每 5 分鐘同時檢查三個來源。",
+      "",
+      scheduleStatusLine("酷澎", monitor?.coupang),
+      "",
+      "自動監控：Cloudflare 每 5 分鐘同時檢查四個來源。",
     ].join("\n");
   }
   if (command === "/check") {
@@ -673,13 +853,9 @@ export async function replyForCommand(
     );
   }
   if (command === "/coupang") {
-    return [
-      "⚠️ 酷澎暫未啟用自動監控",
-      "",
-      "酷澎會阻擋 Cloudflare 等伺服器請求（HTTP 403），目前無法可靠取得即時庫存；不會把快取或搜尋引擎資料假裝成即時結果。",
-      "",
-      `你可直接查看：${COUPANG_SEARCH_URL}`,
-    ].join("\n");
+    return formatCoupangSummary(
+      await fetchCoupangInventory(browser),
+    );
   }
   return `不支援這個指令。\n\n${helpMessage()}`;
 }
@@ -730,12 +906,14 @@ export function buildTestNotificationEvent(
   snapshot,
   costcoSnapshot = null,
   pchomeSnapshot = null,
+  coupangSnapshot = null,
 ) {
   const checks = [
     "✅ 主動通知通道",
     "✅ Apple 頁面解析",
     ...(costcoSnapshot ? ["✅ Costco 頁面解析"] : []),
     ...(pchomeSnapshot ? ["✅ PChome 頁面解析"] : []),
+    ...(coupangSnapshot ? ["✅ 酷澎 Browser Run 解析"] : []),
     "✅ Telegram 推播",
   ];
   return {
@@ -765,6 +943,14 @@ export function buildTestNotificationEvent(
             }),
           ]
         : []),
+      ...(coupangSnapshot
+        ? [
+            "",
+            formatCoupangSummary(coupangSnapshot, {
+              includePurchaseLink: false,
+            }),
+          ]
+        : []),
     ].join("\n"),
     url: APPLE_REFURB_URL,
     disablePreview: true,
@@ -772,20 +958,27 @@ export function buildTestNotificationEvent(
 }
 
 async function sendTestNotification(env) {
-  const [snapshot, costcoSnapshot, pchomeSnapshot] =
+  const [snapshot, costcoSnapshot, pchomeSnapshot, coupangSnapshot] =
     await Promise.all([
-    fetchInventory(fetch),
-    fetchCostcoInventory(fetch),
-    fetchPchomeInventory(fetch),
-  ]);
+      fetchInventory(fetch),
+      fetchCostcoInventory(fetch),
+      fetchPchomeInventory(fetch),
+      fetchCoupangInventory(env.BROWSER),
+    ]);
   await sendMonitorEvents(env, [
     buildTestNotificationEvent(
       snapshot,
       costcoSnapshot,
       pchomeSnapshot,
+      coupangSnapshot,
     ),
   ]);
-  return { snapshot, costcoSnapshot, pchomeSnapshot };
+  return {
+    snapshot,
+    costcoSnapshot,
+    pchomeSnapshot,
+    coupangSnapshot,
+  };
 }
 
 function sourceTables(source) {
@@ -911,15 +1104,17 @@ function stateStatus(state) {
 }
 
 async function monitorStatus(env) {
-  const [apple, costco, pchome] = await Promise.all([
+  const [apple, costco, pchome, coupang] = await Promise.all([
     loadMonitorState(env, "apple"),
     loadMonitorState(env, "costco"),
     loadMonitorState(env, "pchome"),
+    loadMonitorState(env, "coupang"),
   ]);
   return {
     apple: stateStatus(apple),
     costco: stateStatus(costco),
     pchome: stateStatus(pchome),
+    coupang: stateStatus(coupang),
   };
 }
 
@@ -1050,12 +1245,21 @@ export async function runScheduledMonitor(env) {
       fetchSnapshot: fetchPchomeInventory,
       formatSummary: formatPchomeSummary,
     }),
+    runSourceMonitor(env, {
+      source: "coupang",
+      label: "酷澎 M4 Mac mini",
+      sourceName: "酷澎",
+      purchaseUrl: COUPANG_SEARCH_URL,
+      fetchSnapshot: () => fetchCoupangInventory(env.BROWSER),
+      formatSummary: formatCoupangSummary,
+    }),
   ]);
   return {
     ok: results.every((result) => result.ok),
     apple: results[0],
     costco: results[1],
     pchome: results[2],
+    coupang: results[3],
   };
 }
 
@@ -1093,6 +1297,7 @@ async function handleTelegramUpdate(update, env) {
       message.text,
       fetch,
       () => monitorStatus(env),
+      env.BROWSER,
     );
   } catch (error) {
     const fallbackUrl = {
@@ -1148,6 +1353,7 @@ export default {
           snapshot,
           costcoSnapshot,
           pchomeSnapshot,
+          coupangSnapshot,
         } =
           await sendTestNotification(env);
         return Response.json({
@@ -1172,6 +1378,13 @@ export default {
             macMiniCount: pchomeSnapshot.macMiniCount,
             targetProductCount:
               pchomeSnapshot.targetProducts.length,
+          },
+          coupang: {
+            totalProductCount: coupangSnapshot.totalProductCount,
+            macProductCount: coupangSnapshot.macProductCount,
+            macMiniCount: coupangSnapshot.macMiniCount,
+            targetProductCount:
+              coupangSnapshot.targetProducts.length,
           },
         });
       } catch (error) {
