@@ -1,77 +1,33 @@
-name: Monitor Apple M4 Mac mini
+name: Test Python monitor
 
 on:
-  schedule:
-    - cron: "2-59/5 * * * *"
-  workflow_dispatch:
-    inputs:
-      send_test:
-        description: Send a test notification
-        required: false
-        default: false
-        type: boolean
+  push:
+    paths:
+      - ".github/workflows/monitor.yml"
+      - "monitor/**"
+      - "tests/**"
+  pull_request:
+    paths:
+      - ".github/workflows/monitor.yml"
+      - "monitor/**"
+      - "tests/**"
 
 permissions:
-  contents: write
-
-concurrency:
-  group: mac-mini-refurb-monitor
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  monitor:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 4
-    env:
-      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
-      - name: Verify notification secrets
-        shell: bash
-        run: |
-          if [[ -n "$TELEGRAM_BOT_TOKEN" || -n "$TELEGRAM_CHAT_ID" ]]; then
-            if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
-              echo "::error::Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
-              exit 1
-            fi
-          elif [[ -z "$NTFY_TOPIC" ]]; then
-            echo "::error::Set Telegram secrets or the NTFY_TOPIC fallback."
-            exit 1
-          fi
-
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
-
-      - name: Check Apple inventory
-        shell: bash
-        run: |
-          args=(--state-file state/products.json)
-          if [[ "${{ inputs.send_test }}" == "true" ]]; then
-            args+=(--test-notification)
-          fi
-          python -m monitor.cli "${args[@]}"
-
-      - name: Persist state changes
-        shell: bash
-        run: |
-          if [[ -z "$(git status --porcelain -- state/products.json)" ]]; then
-            echo "Inventory state is unchanged."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/products.json
-          git commit -m "Update Mac mini inventory state"
-          git push origin HEAD:${GITHUB_REF_NAME}

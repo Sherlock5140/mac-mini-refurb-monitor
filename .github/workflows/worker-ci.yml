@@ -6,6 +6,7 @@ on:
       - ".github/workflows/worker-ci.yml"
       - "package.json"
       - "package-lock.json"
+      - "migrations/**"
       - "worker/**"
       - "wrangler.jsonc"
   pull_request:
@@ -13,6 +14,7 @@ on:
       - ".github/workflows/worker-ci.yml"
       - "package.json"
       - "package-lock.json"
+      - "migrations/**"
       - "worker/**"
       - "wrangler.jsonc"
 

@@ -1,3 +1,10 @@
+import {
+  applyInventory,
+  applyMonitorError,
+  emptyMonitorState,
+  recoveryEvent,
+} from "./monitor-state.js";
+
 const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
@@ -172,12 +179,21 @@ export function parseAppleInventory(html) {
   };
 }
 
-function taipeiTime() {
+function taipeiTime(value = new Date()) {
   return new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",
     dateStyle: "medium",
     timeStyle: "medium",
     hour12: false,
+  }).format(value);
+}
+
+function taipeiDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
   }).format(new Date());
 }
 
@@ -268,7 +284,11 @@ async function fetchInventory(fetchImpl) {
   return parseAppleInventory(await response.text());
 }
 
-export async function replyForCommand(text, fetchImpl = fetch) {
+export async function replyForCommand(
+  text,
+  fetchImpl = fetch,
+  statusProvider = null,
+) {
   const rawCommand = normalizeText(text).split(/\s+/, 1)[0] || "";
   const command = rawCommand.split("@", 1)[0].toLowerCase();
 
@@ -280,12 +300,21 @@ export async function replyForCommand(text, fetchImpl = fetch) {
   }
   if (command === "/status") {
     const snapshot = await fetchInventory(fetchImpl);
+    const monitor = statusProvider ? await statusProvider() : null;
+    const scheduleStatus = monitor?.lastSuccessAt
+      ? [
+          `Cloudflare 排程：正常`,
+          `最近成功：${taipeiTime(new Date(monitor.lastSuccessAt))}`,
+          `連續錯誤：${monitor.consecutiveErrors}`,
+        ].join("\n")
+      : "Cloudflare 排程：等待第一次執行";
     return [
       "✅ 即時 Bot 與 Apple 頁面均正常",
       "",
       formatInventorySummary(snapshot),
       "",
-      "GitHub Actions 仍會每 5 分鐘自動監控。",
+      scheduleStatus,
+      "自動監控：Cloudflare 每 5 分鐘執行。",
     ].join("\n");
   }
   if (command === "/check") {
@@ -315,6 +344,225 @@ async function telegramRequest(env, method, payload, fetchImpl = fetch) {
   return result.result;
 }
 
+class NotificationError extends Error {}
+
+async function sendMonitorEvents(env, events) {
+  for (const event of events) {
+    let text = `${event.title}\n\n${event.message}`;
+    if (event.url) {
+      text += `\n\n${event.url}`;
+    }
+    try {
+      await telegramRequest(env, "sendMessage", {
+        chat_id: env.TELEGRAM_CHAT_ID,
+        text,
+        link_preview_options: {
+          is_disabled: false,
+        },
+      });
+    } catch (error) {
+      throw new NotificationError(
+        error instanceof Error ? error.message : "Telegram 通知失敗",
+      );
+    }
+  }
+}
+
+async function loadMonitorState(env) {
+  const row = await env.MONITOR_DB.prepare(
+    `SELECT
+      version,
+      initialized,
+      products_json,
+      consecutive_errors,
+      last_heartbeat_date,
+      last_run_at,
+      last_success_at,
+      last_error
+    FROM monitor_state
+    WHERE id = 1`,
+  ).first();
+  if (!row) {
+    return emptyMonitorState();
+  }
+  return {
+    version: Number(row.version),
+    initialized: Boolean(row.initialized),
+    products: JSON.parse(row.products_json),
+    consecutiveErrors: Number(row.consecutive_errors),
+    lastHeartbeatDate: row.last_heartbeat_date,
+    lastRunAt: row.last_run_at,
+    lastSuccessAt: row.last_success_at,
+    lastError: row.last_error,
+  };
+}
+
+async function persistMonitorResult(
+  env,
+  state,
+  {
+    status,
+    snapshot = null,
+    eventCount = 0,
+    errorMessage = null,
+  },
+) {
+  await env.MONITOR_DB.batch([
+    env.MONITOR_DB.prepare(
+      `INSERT INTO monitor_state (
+        id,
+        version,
+        initialized,
+        products_json,
+        consecutive_errors,
+        last_heartbeat_date,
+        last_run_at,
+        last_success_at,
+        last_error
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        version = excluded.version,
+        initialized = excluded.initialized,
+        products_json = excluded.products_json,
+        consecutive_errors = excluded.consecutive_errors,
+        last_heartbeat_date = excluded.last_heartbeat_date,
+        last_run_at = excluded.last_run_at,
+        last_success_at = excluded.last_success_at,
+        last_error = excluded.last_error`,
+    ).bind(
+      state.version,
+      state.initialized ? 1 : 0,
+      JSON.stringify(state.products),
+      state.consecutiveErrors,
+      state.lastHeartbeatDate,
+      state.lastRunAt,
+      state.lastSuccessAt,
+      state.lastError,
+    ),
+    env.MONITOR_DB.prepare(
+      `INSERT INTO monitor_runs (
+        ran_at,
+        status,
+        total_product_count,
+        mac_product_count,
+        mac_mini_count,
+        target_product_count,
+        event_count,
+        error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      state.lastRunAt,
+      status,
+      snapshot?.totalProductCount ?? null,
+      snapshot?.macProductCount ?? null,
+      snapshot?.macMiniCount ?? null,
+      snapshot?.targetProducts.length ?? null,
+      eventCount,
+      errorMessage,
+    ),
+    env.MONITOR_DB.prepare(
+      `DELETE FROM monitor_runs
+      WHERE id NOT IN (
+        SELECT id FROM monitor_runs ORDER BY id DESC LIMIT 2016
+      )`,
+    ),
+  ]);
+}
+
+async function monitorStatus(env) {
+  const state = await loadMonitorState(env);
+  return {
+    initialized: state.initialized,
+    consecutiveErrors: state.consecutiveErrors,
+    lastRunAt: state.lastRunAt,
+    lastSuccessAt: state.lastSuccessAt,
+    lastError: state.lastError,
+  };
+}
+
+export async function runScheduledMonitor(env) {
+  const original = await loadMonitorState(env);
+  const previousErrorCount = original.consecutiveErrors;
+  const nowIso = new Date().toISOString();
+
+  try {
+    const snapshot = await fetchInventory(fetch);
+    const result = applyInventory(
+      original,
+      snapshot.targetProducts,
+      nowIso,
+    );
+    const updated = result.state;
+    const events = result.events;
+    const recovered = recoveryEvent(previousErrorCount);
+    if (recovered) {
+      events.unshift(recovered);
+    }
+
+    const today = taipeiDate();
+    if (
+      original.initialized &&
+      updated.lastHeartbeatDate !== today
+    ) {
+      events.push({
+        kind: "heartbeat",
+        title: "💚 Mac mini 監控正常",
+        message: formatInventorySummary(snapshot),
+        url: APPLE_REFURB_URL,
+      });
+      updated.lastHeartbeatDate = today;
+    } else if (!original.initialized) {
+      updated.lastHeartbeatDate = today;
+    }
+
+    await sendMonitorEvents(env, events);
+    updated.lastRunAt = nowIso;
+    updated.lastSuccessAt = nowIso;
+    await persistMonitorResult(env, updated, {
+      status: "success",
+      snapshot,
+      eventCount: events.length,
+    });
+    console.log(
+      `監控成功：全部 ${snapshot.totalProductCount}，` +
+      `Mac ${snapshot.macProductCount}，Mac mini ${snapshot.macMiniCount}，` +
+      `符合條件 ${snapshot.targetProducts.length}，事件 ${events.length}`,
+    );
+    return {
+      ok: true,
+      snapshot,
+      eventCount: events.length,
+    };
+  } catch (error) {
+    if (error instanceof NotificationError) {
+      throw error;
+    }
+    const message =
+      error instanceof Error ? error.message : "未知監控錯誤";
+    const result = applyMonitorError(original, message, nowIso);
+    let notificationError = null;
+    try {
+      await sendMonitorEvents(env, result.events);
+    } catch (sendError) {
+      notificationError = sendError;
+    }
+    await persistMonitorResult(env, result.state, {
+      status: "error",
+      eventCount: result.events.length,
+      errorMessage: message,
+    });
+    console.error(`監控失敗：${message}`);
+    if (notificationError) {
+      throw notificationError;
+    }
+    return {
+      ok: false,
+      error: message,
+      eventCount: result.events.length,
+    };
+  }
+}
+
 async function handleTelegramUpdate(update, env) {
   const message = update?.message;
   if (!message?.text || message.chat?.id === undefined) {
@@ -326,7 +574,11 @@ async function handleTelegramUpdate(update, env) {
 
   let reply;
   try {
-    reply = await replyForCommand(message.text);
+    reply = await replyForCommand(
+      message.text,
+      fetch,
+      () => monitorStatus(env),
+    );
   } catch (error) {
     reply = [
       "⚠️ 即時查詢暫時失敗",
@@ -348,9 +600,20 @@ export default {
   async fetch(request, env, context) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
+      let monitor = null;
+      try {
+        monitor = await monitorStatus(env);
+      } catch (error) {
+        monitor = {
+          databaseError:
+            error instanceof Error ? error.message : "unknown",
+        };
+      }
       return Response.json({
         ok: true,
         service: "mac-mini-refurb-monitor-bot",
+        scheduler: "*/5 * * * *",
+        monitor,
       });
     }
     if (request.method !== "POST" || url.pathname !== "/telegram") {
@@ -371,6 +634,10 @@ export default {
     }
     context.waitUntil(handleTelegramUpdate(update, env));
     return new Response("OK");
+  },
+
+  async scheduled(_controller, env, context) {
+    context.waitUntil(runScheduledMonitor(env));
   },
 };
 
