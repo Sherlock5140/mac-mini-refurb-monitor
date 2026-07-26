@@ -559,6 +559,59 @@ test("answers Sony commands through Cloudflare Browser Run", async () => {
   assert.match(reply, /NT\$10,791/);
 });
 
+test("retries one blocked Coupang render before parsing Sony", async () => {
+  let browserCalls = 0;
+  const fakeBrowser = {
+    async quickAction() {
+      browserCalls += 1;
+      if (browserCalls === 1) {
+        return Response.json({
+          success: true,
+          result:
+            "<html><body>Sorry! Access denied 您沒有權限存取此頁面。</body></html>",
+          meta: { status: 200 },
+        });
+      }
+      return Response.json({
+        success: true,
+        result: coupangSonyHtml,
+        meta: { status: 200 },
+      });
+    },
+  };
+
+  const reply = await replyForCommand(
+    "/sony",
+    fetch,
+    null,
+    fakeBrowser,
+  );
+
+  assert.equal(browserCalls, 2);
+  assert.match(reply, /NT\$10,791/);
+});
+
+test("reports an explicit Coupang block after one retry", async () => {
+  let browserCalls = 0;
+  const fakeBrowser = {
+    async quickAction() {
+      browserCalls += 1;
+      return Response.json({
+        success: true,
+        result:
+          "<html><body>Access Denied You don't have permission to access this page.</body></html>",
+        meta: { status: 403 },
+      });
+    },
+  };
+
+  await assert.rejects(
+    replyForCommand("/sony", fetch, null, fakeBrowser),
+    /酷澎 Sony遭酷澎暫時拒絕 Cloudflare 存取/,
+  );
+  assert.equal(browserCalls, 2);
+});
+
 test("reports Cloudflare scheduler state in status commands", async () => {
   const fakeFetch = async () =>
     new Response(sampleHtml, {

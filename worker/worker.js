@@ -986,34 +986,51 @@ async function fetchCoupangPage(browser, url, label) {
   if (!browser?.quickAction) {
     throw new Error("Cloudflare Browser Run 尚未設定");
   }
-  const response = await browser.quickAction("content", {
-    url,
-    gotoOptions: {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    },
-    rejectResourceTypes: [
-      "image",
-      "media",
-      "font",
-      "stylesheet",
-      "script",
-    ],
-  });
-  if (!response.ok) {
-    throw new Error(`${label} Browser Run HTTP ${response.status}`);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const response = await browser.quickAction("content", {
+      url,
+      gotoOptions: {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
+      },
+      rejectResourceTypes: [
+        "image",
+        "media",
+        "font",
+        "stylesheet",
+        "script",
+      ],
+    });
+    if (!response.ok) {
+      throw new Error(`${label} Browser Run HTTP ${response.status}`);
+    }
+    const payload = await response.json().catch(() => null);
+    const html =
+      typeof payload?.result === "string" ? payload.result : "";
+    const visible = visiblePageText(html).slice(0, 800);
+    const accessDenied =
+      payload?.meta?.status === 403 ||
+      /(?:sorry!\s*)?access denied|沒有權限存取|don't have permission|you don’t have permission/i.test(
+        visible,
+      );
+    if (accessDenied) {
+      if (attempt === 1) {
+        continue;
+      }
+      throw new Error(`${label}遭酷澎暫時拒絕 Cloudflare 存取`);
+    }
+    if (
+      payload?.success !== true ||
+      payload?.meta?.status !== 200 ||
+      !html
+    ) {
+      throw new Error(
+        `${label}頁面載入失敗（HTTP ${payload?.meta?.status ?? "unknown"}）`,
+      );
+    }
+    return html;
   }
-  const payload = await response.json().catch(() => null);
-  if (
-    payload?.success !== true ||
-    payload?.meta?.status !== 200 ||
-    typeof payload?.result !== "string"
-  ) {
-    throw new Error(
-      `${label}頁面載入失敗（HTTP ${payload?.meta?.status ?? "unknown"}）`,
-    );
-  }
-  return payload.result;
+  throw new Error(`${label}頁面載入失敗`);
 }
 
 async function fetchCoupangInventory(browser, ai = null) {
