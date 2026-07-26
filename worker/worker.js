@@ -1495,24 +1495,7 @@ export default {
   async fetch(request, env, context) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      let monitor = null;
-      try {
-        monitor = await monitorStatus(env);
-      } catch (error) {
-        monitor = {
-          databaseError:
-            error instanceof Error ? error.message : "unknown",
-        };
-      }
-      return Response.json({
-        ok: true,
-        service: "mac-mini-refurb-monitor-bot",
-        scheduler: {
-          macMini: MAC_MONITOR_CRON,
-          sony: SONY_MONITOR_CRON,
-        },
-        monitor,
-      });
+      return Response.json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/admin/test") {
       if (

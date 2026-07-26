@@ -545,6 +545,17 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
 });
 
+test("public health response does not expose operational details", async () => {
+  const response = await worker.fetch(
+    new Request("https://example.com/health"),
+    {},
+    {},
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+});
+
 test("rejects a product page that contains no Mac", () => {
   const iphoneHtml = htmlFor(
     product({
