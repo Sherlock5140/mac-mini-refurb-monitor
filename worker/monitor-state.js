@@ -35,7 +35,12 @@ function event(kind, title, product, extra = "") {
   };
 }
 
-export function applyInventory(state, currentProducts, nowIso) {
+export function applyInventory(
+  state,
+  currentProducts,
+  nowIso,
+  { label = "M4 Mac mini" } = {},
+) {
   const updated = clone(state);
   updated.products ??= {};
   const current = new Map(
@@ -68,7 +73,7 @@ export function applyInventory(state, currentProducts, nowIso) {
         firstSeenAt: nowIso,
       };
       events.push(
-        event("new", "🆕 M4 Mac mini 新上架", observed),
+        event("new", `🆕 ${label} 新上架`, observed),
       );
       continue;
     }
@@ -82,14 +87,14 @@ export function applyInventory(state, currentProducts, nowIso) {
 
     if (!wasPresent) {
       events.push(
-        event("restock", "🎉 M4 Mac mini 重新補貨", observed),
+        event("restock", `🎉 ${label} 重新補貨`, observed),
       );
     } else if (observed.priceTwd < previousPrice) {
       const difference = previousPrice - observed.priceTwd;
       events.push(
         event(
           "price_drop",
-          "💸 M4 Mac mini 降價",
+          `💸 ${label} 降價`,
           observed,
           `\n原價 NT$${previousPrice.toLocaleString("en-US")}，降價 NT$${difference.toLocaleString("en-US")}`,
         ),
@@ -105,7 +110,7 @@ export function applyInventory(state, currentProducts, nowIso) {
     if (stored.missingCount >= 2) {
       stored.present = false;
       events.push(
-        event("removed", "⛔️ M4 Mac mini 已下架", stored),
+        event("removed", `⛔️ ${label} 已下架`, stored),
       );
     }
   }
@@ -115,7 +120,12 @@ export function applyInventory(state, currentProducts, nowIso) {
   return { state: updated, events };
 }
 
-export function applyMonitorError(state, message, nowIso) {
+export function applyMonitorError(
+  state,
+  message,
+  nowIso,
+  { label = "Mac mini" } = {},
+) {
   const updated = clone(state);
   updated.consecutiveErrors =
     Number(updated.consecutiveErrors ?? 0) + 1;
@@ -126,7 +136,7 @@ export function applyMonitorError(state, message, nowIso) {
   if ([1, 3, 6].includes(count)) {
     events.push({
       kind: "error",
-      title: "⚠️ Mac mini 監控異常",
+      title: `⚠️ ${label} 監控異常`,
       message: `連續錯誤 ${count} 次\n${updated.lastError}`,
       url: null,
     });
@@ -134,16 +144,19 @@ export function applyMonitorError(state, message, nowIso) {
   return { state: updated, events };
 }
 
-export function recoveryEvent(previousErrorCount) {
+export function recoveryEvent(
+  previousErrorCount,
+  { label = "Mac mini", source = "Apple" } = {},
+) {
   if (previousErrorCount <= 0) {
     return null;
   }
   return {
     kind: "recovered",
-    title: "✅ Mac mini 監控已恢復",
+    title: `✅ ${label} 監控已恢復`,
     message:
       `先前連續錯誤 ${previousErrorCount} 次，` +
-      "本次已成功取得並解析 Apple 商品資料。",
+      `本次已成功取得並解析 ${source} 商品資料。`,
     url: null,
   };
 }

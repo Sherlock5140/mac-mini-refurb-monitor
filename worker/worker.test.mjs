@@ -3,11 +3,14 @@ import test from "node:test";
 
 import {
   APPLE_REFURB_URL,
+  COSTCO_DESKTOP_URL,
   buildTestNotificationEvent,
   default as worker,
   formatInventorySummary,
+  formatCostcoSummary,
   formatPurchaseMessage,
   parseAppleInventory,
+  parseCostcoInventory,
   replyForCommand,
 } from "./worker.js";
 import {
@@ -62,6 +65,45 @@ const sampleHtml = htmlFor(
   }),
 );
 
+function costcoCard({
+  name,
+  sku,
+  price,
+  available = true,
+}) {
+  const slug = name.replaceAll(" ", "-");
+  return [
+    '<sip-product-list-item class="product-item">',
+    `<a class="thumb" title="${name}" href="/Digital-Mobile/${slug}/p/${sku}"></a>`,
+    '<span class="product-price-amount">',
+    `<span>$${price.toLocaleString("en-US")}</span>`,
+    "</span>",
+    available
+      ? '<button class="add-to-cart__btn">加入購物車</button>'
+      : "<span>缺貨</span>",
+    `<input name="productCodePost" value="${sku}">`,
+    "</sip-product-list-item>",
+  ].join("");
+}
+
+const costcoHtml = [
+  costcoCard({
+    name: "Apple Mac mini Apple M4晶片 16GB 512GB SSD",
+    sku: "149621",
+    price: 31999,
+  }),
+  costcoCard({
+    name: "Apple Mac mini Apple M4 Pro晶片 24GB 512GB SSD",
+    sku: "149999",
+    price: 49999,
+  }),
+  costcoCard({
+    name: "Apple iMac Apple M4晶片 16GB 256GB SSD",
+    sku: "149888",
+    price: 39999,
+  }),
+].join("");
+
 test("parses broad Mac counts while filtering target Mac minis", () => {
   const snapshot = parseAppleInventory(sampleHtml);
 
@@ -90,6 +132,47 @@ test("formats inventory and purchase links", () => {
   );
   assert.match(formatPurchaseMessage(snapshot), /NT\$17,000/);
   assert.match(formatPurchaseMessage(snapshot), /fminita\/a/);
+});
+
+test("parses Costco cards and excludes M4 Pro Mac minis", () => {
+  const snapshot = parseCostcoInventory(costcoHtml);
+
+  assert.equal(snapshot.totalProductCount, 3);
+  assert.equal(snapshot.macProductCount, 3);
+  assert.equal(snapshot.macMiniCount, 2);
+  assert.equal(snapshot.targetProducts.length, 1);
+  assert.deepEqual(snapshot.targetProducts[0], {
+    sku: "COSTCO-149621",
+    name: "Apple Mac mini Apple M4晶片 16GB 512GB SSD",
+    storageGb: 512,
+    memoryGb: 16,
+    priceTwd: 31999,
+    url: "https://www.costco.com.tw/Digital-Mobile/Apple-Mac-mini-Apple-M4%E6%99%B6%E7%89%87-16GB-512GB-SSD/p/149621",
+  });
+});
+
+test("formats Costco live stock and purchase links", () => {
+  const summary = formatCostcoSummary(
+    parseCostcoInventory(costcoHtml),
+  );
+
+  assert.match(summary, /符合條件且有貨：1 項/);
+  assert.match(summary, /512GB｜NT\$31,999｜有貨/);
+  assert.match(summary, new RegExp(COSTCO_DESKTOP_URL));
+});
+
+test("does not treat a visible Costco out-of-stock card as available", () => {
+  const snapshot = parseCostcoInventory(
+    costcoCard({
+      name: "Apple Mac mini Apple M4晶片 16GB 256GB SSD",
+      sku: "149620",
+      price: 18799,
+      available: false,
+    }),
+  );
+
+  assert.equal(snapshot.macMiniCount, 1);
+  assert.equal(snapshot.targetProducts.length, 0);
 });
 
 test("backend test notifications contain one compact purchase link", () => {
@@ -124,6 +207,20 @@ test("answers check commands with live Apple data", async () => {
   assert.match(reply, /購買頁/);
 });
 
+test("answers Costco commands with live Costco data", async () => {
+  const fakeFetch = async () =>
+    new Response(costcoHtml, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+
+  const reply = await replyForCommand("/costco", fakeFetch);
+
+  assert.match(reply, /Costco 台灣 M4 Mac mini/);
+  assert.match(reply, /符合條件且有貨：1 項/);
+  assert.match(reply, /排除 M4 Pro／Max/);
+});
+
 test("reports Cloudflare scheduler state in status commands", async () => {
   const fakeFetch = async () =>
     new Response(sampleHtml, {
@@ -140,8 +237,9 @@ test("reports Cloudflare scheduler state in status commands", async () => {
     }),
   );
 
-  assert.match(reply, /Cloudflare 排程：正常/);
-  assert.match(reply, /每 5 分鐘執行/);
+  assert.match(reply, /Apple 排程：正常/);
+  assert.match(reply, /Costco 排程：等待第一次執行/);
+  assert.match(reply, /每 5 分鐘同時檢查兩個來源/);
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
@@ -149,6 +247,7 @@ test("lists the active notification test command", async () => {
   const reply = await replyForCommand("/help");
 
   assert.match(reply, /\/test－傳送一則 Cloudflare 主動通知測試/);
+  assert.match(reply, /\/costco－立即查詢 Costco 台灣庫存與價格/);
 });
 
 test("rejects a product page that contains no Mac", () => {
@@ -252,6 +351,23 @@ test("Cloudflare detects new, restocked, and cheaper products", () => {
     "2026-07-26T10:25:00.000Z",
   );
   assert.deepEqual(result.events.map((item) => item.kind), ["price_drop"]);
+});
+
+test("labels Costco inventory events separately", () => {
+  let result = applyInventory(
+    emptyMonitorState(),
+    [],
+    "2026-07-26T10:00:00.000Z",
+    { label: "Costco M4 Mac mini" },
+  );
+  result = applyInventory(
+    result.state,
+    [target({ sku: "COSTCO-149621" })],
+    "2026-07-26T10:05:00.000Z",
+    { label: "Costco M4 Mac mini" },
+  );
+
+  assert.match(result.events[0].title, /Costco M4 Mac mini 新上架/);
 });
 
 test("Cloudflare confirms removal twice and resets a single miss", () => {

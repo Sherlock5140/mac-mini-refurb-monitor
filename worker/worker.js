@@ -7,7 +7,20 @@ import {
 
 const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
+const COSTCO_DESKTOP_URL =
+  "https://www.costco.com.tw/Digital-Mobile/Laptops-Computers/Desktops-Computers/c/20101";
+const COSTCO_ORIGIN = "https://www.costco.com.tw";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
+const SOURCE_TABLES = {
+  apple: {
+    state: "monitor_state",
+    runs: "monitor_runs",
+  },
+  costco: {
+    state: "costco_monitor_state",
+    runs: "costco_monitor_runs",
+  },
+};
 
 const DEVICE_FAMILIES = [
   "Mac mini",
@@ -179,6 +192,123 @@ export function parseAppleInventory(html) {
   };
 }
 
+function decodeHtml(value) {
+  return normalizeText(
+    String(value ?? "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">"),
+  );
+}
+
+function costcoTargetProduct({
+  name,
+  url,
+  priceTwd,
+  sku,
+  available,
+}) {
+  const lowered = name.toLowerCase();
+  if (!lowered.includes("mac mini") || !available) {
+    return null;
+  }
+  if (
+    !/\bM4\s*(?:晶片|chip)/i.test(name) ||
+    /\bM4\s*(?:Pro|Max)\b/i.test(name)
+  ) {
+    return null;
+  }
+
+  const storage = storageGb(name);
+  if (![256, 512].includes(storage)) {
+    return null;
+  }
+  const gbValues = [
+    ...name.matchAll(/(?<!\d)(\d+)\s*GB\b/gi),
+  ].map((match) => Number(match[1]));
+  const memory = gbValues.find((value) => value !== storage) ?? null;
+  return {
+    sku: `COSTCO-${sku}`,
+    name,
+    storageGb: storage,
+    memoryGb: memory,
+    priceTwd,
+    url,
+  };
+}
+
+export function parseCostcoInventory(html) {
+  const cards = [
+    ...html.matchAll(
+      /<sip-product-list-item\b[\s\S]*?<\/sip-product-list-item>/gi,
+    ),
+  ].map((match) => match[0]);
+  if (cards.length === 0) {
+    throw new Error("Costco 分類頁沒有辨識到任何商品卡片");
+  }
+
+  const products = [];
+  for (const card of cards) {
+    const link = card.match(
+      /<a\b[^>]*\bclass=["'][^"']*\bthumb\b[^"']*["'][^>]*\btitle=["']([^"']+)["'][^>]*\bhref=["']([^"']+)["']/i,
+    );
+    const fallbackLink = card.match(
+      /<a\b[^>]*\bclass=["'][^"']*\bthumb\b[^"']*["'][^>]*\bhref=["']([^"']+)["'][^>]*\btitle=["']([^"']+)["']/i,
+    );
+    const name = link
+      ? decodeHtml(link[1])
+      : decodeHtml(fallbackLink?.[2]);
+    const path = link ? link[2] : fallbackLink?.[1];
+    const skuMatch = String(path ?? "").match(/\/p\/(\d+)(?:[/?#]|$)/i);
+    const priceMatch = card.match(
+      /\bclass=["'][^"']*\bproduct-price-amount\b[^"']*["'][\s\S]*?\$\s*([\d,]+)/i,
+    );
+    if (!name || !path || !skuMatch || !priceMatch) {
+      continue;
+    }
+    products.push({
+      sku: skuMatch[1],
+      name,
+      url: new URL(decodeHtml(path), COSTCO_ORIGIN).href,
+      priceTwd: Number(priceMatch[1].replaceAll(",", "")),
+      available:
+        /\badd-to-cart__btn\b/i.test(card) &&
+        /加入購物車/.test(card),
+    });
+  }
+  if (products.length === 0) {
+    throw new Error("Costco 商品卡片缺少名稱、價格或商品編號");
+  }
+
+  const targets = new Map();
+  for (const product of products) {
+    const target = costcoTargetProduct(product);
+    if (target) {
+      targets.set(target.sku, target);
+    }
+  }
+  const macProducts = products.filter((product) =>
+    product.name.toLowerCase().includes("mac"),
+  );
+  const macMinis = products.filter((product) =>
+    product.name.toLowerCase().includes("mac mini"),
+  );
+  return {
+    totalProductCount: products.length,
+    macProductCount: macProducts.length,
+    macMiniCount: macMinis.length,
+    deviceCounts: macMinis.length
+      ? [["Mac mini", macMinis.length]]
+      : [],
+    targetProducts: [...targets.values()].sort((a, b) =>
+      a.sku.localeCompare(b.sku),
+    ),
+  };
+}
+
 function taipeiTime(value = new Date()) {
   return new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -262,13 +392,44 @@ export function formatPurchaseMessage(snapshot) {
   ].join("\n");
 }
 
+export function formatCostcoSummary(
+  snapshot,
+  { includePurchaseLink = true } = {},
+) {
+  const productLines = snapshot.targetProducts.length
+    ? snapshot.targetProducts.flatMap((product, index) => [
+        `${index + 1}. ${product.storageGb}GB｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
+        product.url,
+      ])
+    : ["目前沒有符合條件且可加入購物車的商品。"];
+  const lines = [
+    "🔎 Costco 台灣 M4 Mac mini 即時查詢",
+    "",
+    "🎯 監控結果",
+    `符合條件且有貨：${snapshot.targetProducts.length} 項`,
+    `分類頁 Mac mini：${snapshot.macMiniCount} 項`,
+    "",
+    "⚙️ 監控條件",
+    "標準版 M4｜256／512GB SSD｜排除 M4 Pro／Max",
+    "",
+    ...productLines,
+    "",
+    `查詢時間：${taipeiTime()}`,
+  ];
+  if (includePurchaseLink) {
+    lines.push("", `🛒 Costco 桌上型電腦頁：${COSTCO_DESKTOP_URL}`);
+  }
+  return lines.join("\n");
+}
+
 function helpMessage() {
   return [
-    "🤖 Mac mini 整修品監控指令",
+    "🤖 M4 Mac mini 監控指令",
     "",
     "/check－立即查詢 Apple 商品與設備數量",
+    "/costco－立即查詢 Costco 台灣庫存與價格",
     "/buy－列出符合條件的商品與購買連結",
-    "/status－確認即時 Bot 與監控狀態",
+    "/status－確認 Apple 與 Costco 排程狀態",
     "/test－傳送一則 Cloudflare 主動通知測試",
     "/link－開啟 Apple 整修 Mac 購買頁",
     "/help－顯示這份說明",
@@ -295,6 +456,37 @@ async function fetchInventory(fetchImpl) {
   return parseAppleInventory(await response.text());
 }
 
+async function fetchCostcoInventory(fetchImpl) {
+  const response = await fetchImpl(COSTCO_DESKTOP_URL, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+      "Cache-Control": "no-cache",
+      "User-Agent":
+        "Mozilla/5.0 AppleWebKit/537.36 mac-mini-refurb-monitor-worker/1.0",
+    },
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 60,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Costco HTTP ${response.status}`);
+  }
+  return parseCostcoInventory(await response.text());
+}
+
+function scheduleStatusLine(label, monitor) {
+  if (!monitor?.lastSuccessAt) {
+    return `${label} 排程：等待第一次執行`;
+  }
+  return [
+    `${label} 排程：正常`,
+    `最近成功：${taipeiTime(new Date(monitor.lastSuccessAt))}`,
+    `連續錯誤：${monitor.consecutiveErrors}`,
+  ].join("\n");
+}
+
 export async function replyForCommand(
   text,
   fetchImpl = fetch,
@@ -312,20 +504,17 @@ export async function replyForCommand(
   if (command === "/status") {
     const snapshot = await fetchInventory(fetchImpl);
     const monitor = statusProvider ? await statusProvider() : null;
-    const scheduleStatus = monitor?.lastSuccessAt
-      ? [
-          `Cloudflare 排程：正常`,
-          `最近成功：${taipeiTime(new Date(monitor.lastSuccessAt))}`,
-          `連續錯誤：${monitor.consecutiveErrors}`,
-        ].join("\n")
-      : "Cloudflare 排程：等待第一次執行";
+    const appleMonitor = monitor?.apple ?? monitor;
+    const costcoMonitor = monitor?.costco;
     return [
-      "✅ 即時 Bot 與 Apple 頁面均正常",
+      "✅ 即時 Bot 與 Apple 頁面正常",
       "",
       formatInventorySummary(snapshot),
       "",
-      scheduleStatus,
-      "自動監控：Cloudflare 每 5 分鐘執行。",
+      scheduleStatusLine("Apple", appleMonitor),
+      "",
+      scheduleStatusLine("Costco", costcoMonitor),
+      "自動監控：Cloudflare 每 5 分鐘同時檢查兩個來源。",
     ].join("\n");
   }
   if (command === "/check") {
@@ -333,6 +522,11 @@ export async function replyForCommand(
   }
   if (command === "/buy") {
     return formatPurchaseMessage(await fetchInventory(fetchImpl));
+  }
+  if (command === "/costco") {
+    return formatCostcoSummary(
+      await fetchCostcoInventory(fetchImpl),
+    );
   }
   return `不支援這個指令。\n\n${helpMessage()}`;
 }
@@ -379,20 +573,35 @@ async function sendMonitorEvents(env, events) {
   }
 }
 
-export function buildTestNotificationEvent(snapshot) {
+export function buildTestNotificationEvent(
+  snapshot,
+  costcoSnapshot = null,
+) {
+  const checks = [
+    "✅ 主動通知通道",
+    "✅ Apple 頁面解析",
+    ...(costcoSnapshot ? ["✅ Costco 頁面解析"] : []),
+    "✅ Telegram 推播",
+  ];
   return {
     kind: "test",
     title: "✅ Cloudflare 後台推播測試成功",
     message: [
       "Cloudflare 直接發送｜未經 Telegram 指令",
       "",
-      "✅ 主動通知通道",
-      "✅ Apple 頁面解析",
-      "✅ Telegram 推播",
+      ...checks,
       "",
       formatInventorySummary(snapshot, {
         includePurchaseLink: false,
       }),
+      ...(costcoSnapshot
+        ? [
+            "",
+            formatCostcoSummary(costcoSnapshot, {
+              includePurchaseLink: false,
+            }),
+          ]
+        : []),
     ].join("\n"),
     url: APPLE_REFURB_URL,
     disablePreview: true,
@@ -400,12 +609,26 @@ export function buildTestNotificationEvent(snapshot) {
 }
 
 async function sendTestNotification(env) {
-  const snapshot = await fetchInventory(fetch);
-  await sendMonitorEvents(env, [buildTestNotificationEvent(snapshot)]);
-  return snapshot;
+  const [snapshot, costcoSnapshot] = await Promise.all([
+    fetchInventory(fetch),
+    fetchCostcoInventory(fetch),
+  ]);
+  await sendMonitorEvents(env, [
+    buildTestNotificationEvent(snapshot, costcoSnapshot),
+  ]);
+  return { snapshot, costcoSnapshot };
 }
 
-async function loadMonitorState(env) {
+function sourceTables(source) {
+  const tables = SOURCE_TABLES[source];
+  if (!tables) {
+    throw new Error(`未知監控來源：${source}`);
+  }
+  return tables;
+}
+
+async function loadMonitorState(env, source = "apple") {
+  const tables = sourceTables(source);
   const row = await env.MONITOR_DB.prepare(
     `SELECT
       version,
@@ -416,7 +639,7 @@ async function loadMonitorState(env) {
       last_run_at,
       last_success_at,
       last_error
-    FROM monitor_state
+    FROM ${tables.state}
     WHERE id = 1`,
   ).first();
   if (!row) {
@@ -442,11 +665,13 @@ async function persistMonitorResult(
     snapshot = null,
     eventCount = 0,
     errorMessage = null,
+    source = "apple",
   },
 ) {
+  const tables = sourceTables(source);
   await env.MONITOR_DB.batch([
     env.MONITOR_DB.prepare(
-      `INSERT INTO monitor_state (
+      `INSERT INTO ${tables.state} (
         id,
         version,
         initialized,
@@ -477,7 +702,7 @@ async function persistMonitorResult(
       state.lastError,
     ),
     env.MONITOR_DB.prepare(
-      `INSERT INTO monitor_runs (
+      `INSERT INTO ${tables.runs} (
         ran_at,
         status,
         total_product_count,
@@ -498,16 +723,15 @@ async function persistMonitorResult(
       errorMessage,
     ),
     env.MONITOR_DB.prepare(
-      `DELETE FROM monitor_runs
+      `DELETE FROM ${tables.runs}
       WHERE id NOT IN (
-        SELECT id FROM monitor_runs ORDER BY id DESC LIMIT 2016
+        SELECT id FROM ${tables.runs} ORDER BY id DESC LIMIT 2016
       )`,
     ),
   ]);
 }
 
-async function monitorStatus(env) {
-  const state = await loadMonitorState(env);
+function stateStatus(state) {
   return {
     initialized: state.initialized,
     consecutiveErrors: state.consecutiveErrors,
@@ -517,21 +741,43 @@ async function monitorStatus(env) {
   };
 }
 
-export async function runScheduledMonitor(env) {
-  const original = await loadMonitorState(env);
+async function monitorStatus(env) {
+  const [apple, costco] = await Promise.all([
+    loadMonitorState(env, "apple"),
+    loadMonitorState(env, "costco"),
+  ]);
+  return {
+    apple: stateStatus(apple),
+    costco: stateStatus(costco),
+  };
+}
+
+async function runSourceMonitor(env, {
+  source,
+  label,
+  sourceName,
+  purchaseUrl,
+  fetchSnapshot,
+  formatSummary,
+}) {
+  const original = await loadMonitorState(env, source);
   const previousErrorCount = original.consecutiveErrors;
   const nowIso = new Date().toISOString();
 
   try {
-    const snapshot = await fetchInventory(fetch);
+    const snapshot = await fetchSnapshot(fetch);
     const result = applyInventory(
       original,
       snapshot.targetProducts,
       nowIso,
+      { label },
     );
     const updated = result.state;
     const events = result.events;
-    const recovered = recoveryEvent(previousErrorCount);
+    const recovered = recoveryEvent(previousErrorCount, {
+      label,
+      source: sourceName,
+    });
     if (recovered) {
       events.unshift(recovered);
     }
@@ -543,11 +789,11 @@ export async function runScheduledMonitor(env) {
     ) {
       events.push({
         kind: "heartbeat",
-        title: "💚 Mac mini 監控正常",
-        message: formatInventorySummary(snapshot, {
+        title: `💚 ${label} 監控正常`,
+        message: formatSummary(snapshot, {
           includePurchaseLink: false,
         }),
-        url: APPLE_REFURB_URL,
+        url: purchaseUrl,
         disablePreview: true,
       });
       updated.lastHeartbeatDate = today;
@@ -562,9 +808,10 @@ export async function runScheduledMonitor(env) {
       status: "success",
       snapshot,
       eventCount: events.length,
+      source,
     });
     console.log(
-      `監控成功：全部 ${snapshot.totalProductCount}，` +
+      `${sourceName} 監控成功：全部 ${snapshot.totalProductCount}，` +
       `Mac ${snapshot.macProductCount}，Mac mini ${snapshot.macMiniCount}，` +
       `符合條件 ${snapshot.targetProducts.length}，事件 ${events.length}`,
     );
@@ -579,7 +826,9 @@ export async function runScheduledMonitor(env) {
     }
     const message =
       error instanceof Error ? error.message : "未知監控錯誤";
-    const result = applyMonitorError(original, message, nowIso);
+    const result = applyMonitorError(original, message, nowIso, {
+      label,
+    });
     let notificationError = null;
     try {
       await sendMonitorEvents(env, result.events);
@@ -590,8 +839,9 @@ export async function runScheduledMonitor(env) {
       status: "error",
       eventCount: result.events.length,
       errorMessage: message,
+      source,
     });
-    console.error(`監控失敗：${message}`);
+    console.error(`${sourceName} 監控失敗：${message}`);
     if (notificationError) {
       throw notificationError;
     }
@@ -601,6 +851,32 @@ export async function runScheduledMonitor(env) {
       eventCount: result.events.length,
     };
   }
+}
+
+export async function runScheduledMonitor(env) {
+  const results = await Promise.all([
+    runSourceMonitor(env, {
+      source: "apple",
+      label: "Apple M4 Mac mini",
+      sourceName: "Apple",
+      purchaseUrl: APPLE_REFURB_URL,
+      fetchSnapshot: fetchInventory,
+      formatSummary: formatInventorySummary,
+    }),
+    runSourceMonitor(env, {
+      source: "costco",
+      label: "Costco M4 Mac mini",
+      sourceName: "Costco",
+      purchaseUrl: COSTCO_DESKTOP_URL,
+      fetchSnapshot: fetchCostcoInventory,
+      formatSummary: formatCostcoSummary,
+    }),
+  ]);
+  return {
+    ok: results.every((result) => result.ok),
+    apple: results[0],
+    costco: results[1],
+  };
 }
 
 async function handleTelegramUpdate(update, env) {
@@ -639,11 +915,13 @@ async function handleTelegramUpdate(update, env) {
       () => monitorStatus(env),
     );
   } catch (error) {
+    const fallbackUrl =
+      command === "/costco" ? COSTCO_DESKTOP_URL : APPLE_REFURB_URL;
     reply = [
       "⚠️ 即時查詢暫時失敗",
       error instanceof Error ? error.message : "未知錯誤",
       "",
-      `你仍可直接查看：${APPLE_REFURB_URL}`,
+      `你仍可直接查看：${fallbackUrl}`,
     ].join("\n");
   }
   await telegramRequest(env, "sendMessage", {
@@ -683,14 +961,24 @@ export default {
         return new Response("Unauthorized", { status: 401 });
       }
       try {
-        const snapshot = await sendTestNotification(env);
+        const { snapshot, costcoSnapshot } =
+          await sendTestNotification(env);
         return Response.json({
           ok: true,
           sent: true,
-          totalProductCount: snapshot.totalProductCount,
-          macProductCount: snapshot.macProductCount,
-          macMiniCount: snapshot.macMiniCount,
-          targetProductCount: snapshot.targetProducts.length,
+          apple: {
+            totalProductCount: snapshot.totalProductCount,
+            macProductCount: snapshot.macProductCount,
+            macMiniCount: snapshot.macMiniCount,
+            targetProductCount: snapshot.targetProducts.length,
+          },
+          costco: {
+            totalProductCount: costcoSnapshot.totalProductCount,
+            macProductCount: costcoSnapshot.macProductCount,
+            macMiniCount: costcoSnapshot.macMiniCount,
+            targetProductCount:
+              costcoSnapshot.targetProducts.length,
+          },
         });
       } catch (error) {
         console.error(
@@ -732,4 +1020,4 @@ export default {
   },
 };
 
-export { APPLE_REFURB_URL };
+export { APPLE_REFURB_URL, COSTCO_DESKTOP_URL };
