@@ -16,6 +16,8 @@ import {
   formatCostcoSummary,
   formatPchomeSummary,
   formatPurchaseMessage,
+  claimAiChatAllowance,
+  interpretNaturalLanguage,
   parseAppleInventory,
   parseWithAiDiagnostics,
   parseCoupangInventory,
@@ -23,6 +25,7 @@ import {
   parseCostcoInventory,
   parsePchomeInventory,
   replyForCommand,
+  replyForNaturalLanguage,
   filterInventoryEvents,
 } from "./worker.js";
 import {
@@ -250,6 +253,97 @@ test("does not spend Workers AI quota when deterministic parsing succeeds", asyn
 
   assert.equal(aiCalls, 0);
   assert.equal(snapshot.targetProducts.length, 1);
+});
+
+test("routes natural language through the GLM chat model", async () => {
+  let calls = 0;
+  const intent = await interpretNaturalLanguage(
+    "幫我查 Sony 耳機現在多少錢",
+    {
+      async run(model, input) {
+        calls += 1;
+        assert.equal(model, "@cf/zai-org/glm-4.7-flash");
+        assert.equal(input.max_completion_tokens, 180);
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "sony",
+                  reply: "",
+                }),
+              },
+            },
+          ],
+        };
+      },
+    },
+  );
+
+  assert.equal(calls, 1);
+  assert.deepEqual(intent, {
+    action: "sony",
+    reply: "",
+  });
+});
+
+test("tracks a conservative daily AI chat allowance", async () => {
+  const bindings = [];
+  const db = {
+    prepare() {
+      return {
+        bind(...values) {
+          bindings.push(values);
+          return {
+            async first() {
+              return { request_count: 7 };
+            },
+          };
+        },
+      };
+    },
+  };
+  const allowance = await claimAiChatAllowance(
+    db,
+    new Date("2026-07-26T13:00:00.000Z"),
+  );
+
+  assert.deepEqual(allowance, {
+    allowed: true,
+    remaining: 33,
+  });
+  assert.equal(bindings[0][0], "2026-07-26");
+  assert.equal(bindings[0][2], 40);
+});
+
+test("natural-language chat falls back when the local free quota is exhausted", async () => {
+  let aiCalls = 0;
+  const env = {
+    AI: {
+      async run() {
+        aiCalls += 1;
+        return {};
+      },
+    },
+    MONITOR_DB: {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return null;
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+  const reply = await replyForNaturalLanguage("你好", env);
+
+  assert.equal(aiCalls, 0);
+  assert.match(reply, /今日免費 AI 對話額度已用完/);
+  assert.match(reply, /\/status/);
 });
 
 test("uses Workers AI only to diagnose a deterministic parser failure", async () => {
