@@ -10,6 +10,11 @@ const APPLE_REFURB_URL =
 const COSTCO_DESKTOP_URL =
   "https://www.costco.com.tw/Digital-Mobile/Laptops-Computers/Desktops-Computers/c/20101";
 const COSTCO_ORIGIN = "https://www.costco.com.tw";
+const PCHOME_SEARCH_URL =
+  "https://24h.pchome.com.tw/search/?q=mac%20mini%20m4";
+const PCHOME_ORIGIN = "https://24h.pchome.com.tw";
+const COUPANG_SEARCH_URL =
+  "https://www.tw.coupang.com/srp/mac-mini?q=mac%20mini%20m4";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const SOURCE_TABLES = {
   apple: {
@@ -19,6 +24,10 @@ const SOURCE_TABLES = {
   costco: {
     state: "costco_monitor_state",
     runs: "costco_monitor_runs",
+  },
+  pchome: {
+    state: "pchome_monitor_state",
+    runs: "pchome_monitor_runs",
   },
 };
 
@@ -309,6 +318,82 @@ export function parseCostcoInventory(html) {
   };
 }
 
+export function parsePchomeInventory(html) {
+  const starts = [
+    ...html.matchAll(
+      /<div\b[^>]*\bclass=["'][^"']*\bc-prodInfoV2\b[^"']*\bc-prodInfoV2--gridCard\b[^"']*["'][^>]*>/gi,
+    ),
+  ];
+  if (starts.length === 0) {
+    throw new Error("PChome 搜尋頁沒有辨識到任何商品卡片");
+  }
+
+  const products = [];
+  for (let index = 0; index < starts.length; index += 1) {
+    const card = html.slice(
+      starts[index].index,
+      starts[index + 1]?.index ?? html.length,
+    );
+    const nameMatch = card.match(
+      /<h3\b[^>]*\btitle=["']([^"']+)["'][^>]*\bdata-regression=["']store_prodName["']/i,
+    );
+    const linkMatch = card.match(
+      /<a\b[^>]*\bclass=["'][^"']*\bc-prodInfoV2__link\b[^"']*["'][^>]*\bhref=["']([^"']+)["']/i,
+    );
+    const priceMatch = card.match(
+      /\bc-prodInfoV2__priceValue--m\b[^>]*>\s*\$\s*([\d,]+)/i,
+    );
+    const cartMatch = card.match(
+      /<button\b([^>]*)\bdata-regression=["']store_addToCart["'][^>]*>/i,
+    );
+    const name = decodeHtml(nameMatch?.[1]);
+    const path = decodeHtml(linkMatch?.[1]);
+    const skuMatch = path.match(/\/prod\/([A-Z0-9-]+)(?:[/?#]|$)/i);
+    if (!name || !path || !skuMatch || !priceMatch) {
+      continue;
+    }
+    products.push({
+      sku: skuMatch[1].toUpperCase(),
+      name,
+      url: new URL(path, PCHOME_ORIGIN).href,
+      priceTwd: Number(priceMatch[1].replaceAll(",", "")),
+      available:
+        Boolean(cartMatch) &&
+        !/\bdisabled\b/i.test(cartMatch[0]) &&
+        !/\bis-disabled\b/i.test(cartMatch[0]),
+    });
+  }
+  if (products.length === 0) {
+    throw new Error("PChome 商品卡片缺少名稱、價格或商品編號");
+  }
+
+  const targets = new Map();
+  for (const product of products) {
+    const target = costcoTargetProduct(product);
+    if (target) {
+      target.sku = `PCHOME-${product.sku}`;
+      targets.set(target.sku, target);
+    }
+  }
+  const macProducts = products.filter((product) =>
+    product.name.toLowerCase().includes("mac"),
+  );
+  const macMinis = products.filter((product) =>
+    product.name.toLowerCase().includes("mac mini"),
+  );
+  return {
+    totalProductCount: products.length,
+    macProductCount: macProducts.length,
+    macMiniCount: macMinis.length,
+    deviceCounts: macMinis.length
+      ? [["Mac mini", macMinis.length]]
+      : [],
+    targetProducts: [...targets.values()].sort((a, b) =>
+      a.sku.localeCompare(b.sku),
+    ),
+  };
+}
+
 function taipeiTime(value = new Date()) {
   return new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -422,12 +507,44 @@ export function formatCostcoSummary(
   return lines.join("\n");
 }
 
+export function formatPchomeSummary(
+  snapshot,
+  { includePurchaseLink = true } = {},
+) {
+  const productLines = snapshot.targetProducts.length
+    ? snapshot.targetProducts.flatMap((product, index) => [
+        `${index + 1}. ${product.storageGb}GB｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
+        product.url,
+      ])
+    : ["目前沒有符合條件且可加入購物車的商品。"];
+  const lines = [
+    "🔎 PChome 24h M4 Mac mini 即時查詢",
+    "",
+    "🎯 監控結果",
+    `符合條件且有貨：${snapshot.targetProducts.length} 項`,
+    `搜尋頁 Mac mini：${snapshot.macMiniCount} 項`,
+    "",
+    "⚙️ 監控條件",
+    "標準版 M4｜256／512GB SSD｜排除 M4 Pro／Max",
+    "",
+    ...productLines,
+    "",
+    `查詢時間：${taipeiTime()}`,
+  ];
+  if (includePurchaseLink) {
+    lines.push("", `🛒 PChome 搜尋頁：${PCHOME_SEARCH_URL}`);
+  }
+  return lines.join("\n");
+}
+
 function helpMessage() {
   return [
     "🤖 M4 Mac mini 監控指令",
     "",
     "/check－立即查詢 Apple 商品與設備數量",
     "/costco－立即查詢 Costco 台灣庫存與價格",
+    "/pchome－立即查詢 PChome 24h 庫存與價格",
+    "/coupang－開啟酷澎搜尋頁並顯示監控限制",
     "/buy－列出符合條件的商品與購買連結",
     "/status－確認 Apple 與 Costco 排程狀態",
     "/test－傳送一則 Cloudflare 主動通知測試",
@@ -476,6 +593,26 @@ async function fetchCostcoInventory(fetchImpl) {
   return parseCostcoInventory(await response.text());
 }
 
+async function fetchPchomeInventory(fetchImpl) {
+  const response = await fetchImpl(PCHOME_SEARCH_URL, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+      "Cache-Control": "no-cache",
+      "User-Agent":
+        "Mozilla/5.0 AppleWebKit/537.36 mac-mini-refurb-monitor-worker/1.0",
+    },
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 60,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`PChome HTTP ${response.status}`);
+  }
+  return parsePchomeInventory(await response.text());
+}
+
 function scheduleStatusLine(label, monitor) {
   if (!monitor?.lastSuccessAt) {
     return `${label} 排程：等待第一次執行`;
@@ -514,7 +651,9 @@ export async function replyForCommand(
       scheduleStatusLine("Apple", appleMonitor),
       "",
       scheduleStatusLine("Costco", costcoMonitor),
-      "自動監控：Cloudflare 每 5 分鐘同時檢查兩個來源。",
+      "",
+      scheduleStatusLine("PChome", monitor?.pchome),
+      "自動監控：Cloudflare 每 5 分鐘同時檢查三個來源。",
     ].join("\n");
   }
   if (command === "/check") {
@@ -527,6 +666,20 @@ export async function replyForCommand(
     return formatCostcoSummary(
       await fetchCostcoInventory(fetchImpl),
     );
+  }
+  if (command === "/pchome") {
+    return formatPchomeSummary(
+      await fetchPchomeInventory(fetchImpl),
+    );
+  }
+  if (command === "/coupang") {
+    return [
+      "⚠️ 酷澎暫未啟用自動監控",
+      "",
+      "酷澎會阻擋 Cloudflare 等伺服器請求（HTTP 403），目前無法可靠取得即時庫存；不會把快取或搜尋引擎資料假裝成即時結果。",
+      "",
+      `你可直接查看：${COUPANG_SEARCH_URL}`,
+    ].join("\n");
   }
   return `不支援這個指令。\n\n${helpMessage()}`;
 }
@@ -576,11 +729,13 @@ async function sendMonitorEvents(env, events) {
 export function buildTestNotificationEvent(
   snapshot,
   costcoSnapshot = null,
+  pchomeSnapshot = null,
 ) {
   const checks = [
     "✅ 主動通知通道",
     "✅ Apple 頁面解析",
     ...(costcoSnapshot ? ["✅ Costco 頁面解析"] : []),
+    ...(pchomeSnapshot ? ["✅ PChome 頁面解析"] : []),
     "✅ Telegram 推播",
   ];
   return {
@@ -602,6 +757,14 @@ export function buildTestNotificationEvent(
             }),
           ]
         : []),
+      ...(pchomeSnapshot
+        ? [
+            "",
+            formatPchomeSummary(pchomeSnapshot, {
+              includePurchaseLink: false,
+            }),
+          ]
+        : []),
     ].join("\n"),
     url: APPLE_REFURB_URL,
     disablePreview: true,
@@ -609,14 +772,20 @@ export function buildTestNotificationEvent(
 }
 
 async function sendTestNotification(env) {
-  const [snapshot, costcoSnapshot] = await Promise.all([
+  const [snapshot, costcoSnapshot, pchomeSnapshot] =
+    await Promise.all([
     fetchInventory(fetch),
     fetchCostcoInventory(fetch),
+    fetchPchomeInventory(fetch),
   ]);
   await sendMonitorEvents(env, [
-    buildTestNotificationEvent(snapshot, costcoSnapshot),
+    buildTestNotificationEvent(
+      snapshot,
+      costcoSnapshot,
+      pchomeSnapshot,
+    ),
   ]);
-  return { snapshot, costcoSnapshot };
+  return { snapshot, costcoSnapshot, pchomeSnapshot };
 }
 
 function sourceTables(source) {
@@ -742,13 +911,15 @@ function stateStatus(state) {
 }
 
 async function monitorStatus(env) {
-  const [apple, costco] = await Promise.all([
+  const [apple, costco, pchome] = await Promise.all([
     loadMonitorState(env, "apple"),
     loadMonitorState(env, "costco"),
+    loadMonitorState(env, "pchome"),
   ]);
   return {
     apple: stateStatus(apple),
     costco: stateStatus(costco),
+    pchome: stateStatus(pchome),
   };
 }
 
@@ -871,11 +1042,20 @@ export async function runScheduledMonitor(env) {
       fetchSnapshot: fetchCostcoInventory,
       formatSummary: formatCostcoSummary,
     }),
+    runSourceMonitor(env, {
+      source: "pchome",
+      label: "PChome M4 Mac mini",
+      sourceName: "PChome",
+      purchaseUrl: PCHOME_SEARCH_URL,
+      fetchSnapshot: fetchPchomeInventory,
+      formatSummary: formatPchomeSummary,
+    }),
   ]);
   return {
     ok: results.every((result) => result.ok),
     apple: results[0],
     costco: results[1],
+    pchome: results[2],
   };
 }
 
@@ -915,8 +1095,11 @@ async function handleTelegramUpdate(update, env) {
       () => monitorStatus(env),
     );
   } catch (error) {
-    const fallbackUrl =
-      command === "/costco" ? COSTCO_DESKTOP_URL : APPLE_REFURB_URL;
+    const fallbackUrl = {
+      "/costco": COSTCO_DESKTOP_URL,
+      "/pchome": PCHOME_SEARCH_URL,
+      "/coupang": COUPANG_SEARCH_URL,
+    }[command] ?? APPLE_REFURB_URL;
     reply = [
       "⚠️ 即時查詢暫時失敗",
       error instanceof Error ? error.message : "未知錯誤",
@@ -961,7 +1144,11 @@ export default {
         return new Response("Unauthorized", { status: 401 });
       }
       try {
-        const { snapshot, costcoSnapshot } =
+        const {
+          snapshot,
+          costcoSnapshot,
+          pchomeSnapshot,
+        } =
           await sendTestNotification(env);
         return Response.json({
           ok: true,
@@ -978,6 +1165,13 @@ export default {
             macMiniCount: costcoSnapshot.macMiniCount,
             targetProductCount:
               costcoSnapshot.targetProducts.length,
+          },
+          pchome: {
+            totalProductCount: pchomeSnapshot.totalProductCount,
+            macProductCount: pchomeSnapshot.macProductCount,
+            macMiniCount: pchomeSnapshot.macMiniCount,
+            targetProductCount:
+              pchomeSnapshot.targetProducts.length,
           },
         });
       } catch (error) {
@@ -1020,4 +1214,9 @@ export default {
   },
 };
 
-export { APPLE_REFURB_URL, COSTCO_DESKTOP_URL };
+export {
+  APPLE_REFURB_URL,
+  COSTCO_DESKTOP_URL,
+  COUPANG_SEARCH_URL,
+  PCHOME_SEARCH_URL,
+};

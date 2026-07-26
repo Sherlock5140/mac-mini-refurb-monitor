@@ -3,14 +3,18 @@ import test from "node:test";
 
 import {
   APPLE_REFURB_URL,
+  COUPANG_SEARCH_URL,
   COSTCO_DESKTOP_URL,
+  PCHOME_SEARCH_URL,
   buildTestNotificationEvent,
   default as worker,
   formatInventorySummary,
   formatCostcoSummary,
+  formatPchomeSummary,
   formatPurchaseMessage,
   parseAppleInventory,
   parseCostcoInventory,
+  parsePchomeInventory,
   replyForCommand,
 } from "./worker.js";
 import {
@@ -104,6 +108,42 @@ const costcoHtml = [
   }),
 ].join("");
 
+function pchomeCard({
+  name,
+  sku,
+  price,
+  available = true,
+}) {
+  return [
+    '<div class="c-prodInfoV2 c-prodInfoV2--gridCard" data-soldout="false">',
+    `<a class="c-prodInfoV2__link" href="/prod/${sku}">`,
+    `<h3 title="${name}" data-regression="store_prodName">${name}</h3>`,
+    `<div class="c-prodInfoV2__priceValue c-prodInfoV2__priceValue--m">$${price.toLocaleString("en-US")}</div>`,
+    "</a>",
+    `<button ${available ? "" : "disabled "}data-regression="store_addToCart"></button>`,
+    "</div>",
+  ].join("");
+}
+
+const pchomeHtml = [
+  pchomeCard({
+    name: "Apple 蘋果 Mac mini M4 晶片配備 10 核心 CPU、10 核心 GPU、16GB記憶體 512GB SSD",
+    sku: "DYAJFD-A900K5QTY",
+    price: 33900,
+  }),
+  pchomeCard({
+    name: "Apple 蘋果 Mac mini M4 晶片配備 10 核心 CPU、10 核心 GPU、24GB記憶體 512GB SSD",
+    sku: "DYAJFD-A900K5QTR",
+    price: 40900,
+    available: false,
+  }),
+  pchomeCard({
+    name: "Apple 蘋果 Mac mini M4 Pro 晶片配備 12 核心 CPU、24GB記憶體 512GB SSD",
+    sku: "DYAJFD-A900K5QSV",
+    price: 54900,
+  }),
+].join("");
+
 test("parses broad Mac counts while filtering target Mac minis", () => {
   const snapshot = parseAppleInventory(sampleHtml);
 
@@ -175,6 +215,32 @@ test("does not treat a visible Costco out-of-stock card as available", () => {
   assert.equal(snapshot.targetProducts.length, 0);
 });
 
+test("parses PChome stock and excludes sold-out or Pro models", () => {
+  const snapshot = parsePchomeInventory(pchomeHtml);
+
+  assert.equal(snapshot.totalProductCount, 3);
+  assert.equal(snapshot.macMiniCount, 3);
+  assert.equal(snapshot.targetProducts.length, 1);
+  assert.deepEqual(snapshot.targetProducts[0], {
+    sku: "PCHOME-DYAJFD-A900K5QTY",
+    name: "Apple 蘋果 Mac mini M4 晶片配備 10 核心 CPU、10 核心 GPU、16GB記憶體 512GB SSD",
+    storageGb: 512,
+    memoryGb: 16,
+    priceTwd: 33900,
+    url: "https://24h.pchome.com.tw/prod/DYAJFD-A900K5QTY",
+  });
+});
+
+test("formats PChome live stock and purchase links", () => {
+  const summary = formatPchomeSummary(
+    parsePchomeInventory(pchomeHtml),
+  );
+
+  assert.match(summary, /符合條件且有貨：1 項/);
+  assert.match(summary, /512GB｜NT\$33,900｜有貨/);
+  assert.ok(summary.includes(PCHOME_SEARCH_URL));
+});
+
 test("backend test notifications contain one compact purchase link", () => {
   const event = buildTestNotificationEvent(
     parseAppleInventory(sampleHtml),
@@ -221,6 +287,27 @@ test("answers Costco commands with live Costco data", async () => {
   assert.match(reply, /排除 M4 Pro／Max/);
 });
 
+test("answers PChome commands with live PChome data", async () => {
+  const fakeFetch = async () =>
+    new Response(pchomeHtml, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+
+  const reply = await replyForCommand("/pchome", fakeFetch);
+
+  assert.match(reply, /PChome 24h M4 Mac mini/);
+  assert.match(reply, /符合條件且有貨：1 項/);
+});
+
+test("explains Coupang server blocking without fake live data", async () => {
+  const reply = await replyForCommand("/coupang");
+
+  assert.match(reply, /暫未啟用自動監控/);
+  assert.match(reply, /HTTP 403/);
+  assert.ok(reply.includes(COUPANG_SEARCH_URL));
+});
+
 test("reports Cloudflare scheduler state in status commands", async () => {
   const fakeFetch = async () =>
     new Response(sampleHtml, {
@@ -239,7 +326,7 @@ test("reports Cloudflare scheduler state in status commands", async () => {
 
   assert.match(reply, /Apple 排程：正常/);
   assert.match(reply, /Costco 排程：等待第一次執行/);
-  assert.match(reply, /每 5 分鐘同時檢查兩個來源/);
+  assert.match(reply, /每 5 分鐘同時檢查三個來源/);
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
@@ -248,6 +335,8 @@ test("lists the active notification test command", async () => {
 
   assert.match(reply, /\/test－傳送一則 Cloudflare 主動通知測試/);
   assert.match(reply, /\/costco－立即查詢 Costco 台灣庫存與價格/);
+  assert.match(reply, /\/pchome－立即查詢 PChome 24h 庫存與價格/);
+  assert.match(reply, /\/coupang－開啟酷澎搜尋頁並顯示監控限制/);
 });
 
 test("rejects a product page that contains no Mac", () => {
