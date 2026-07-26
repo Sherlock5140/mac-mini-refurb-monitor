@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       send_test:
-        description: Send a test ntfy notification
+        description: Send a test notification
         required: false
         default: false
         type: boolean
@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 4
     env:
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Check out repository
@@ -36,11 +38,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Verify NTFY_TOPIC
+      - name: Verify notification secrets
         shell: bash
         run: |
-          if [[ -z "$NTFY_TOPIC" ]]; then
-            echo "::error::Set the NTFY_TOPIC repository secret before running the monitor."
+          if [[ -n "$TELEGRAM_BOT_TOKEN" || -n "$TELEGRAM_CHAT_ID" ]]; then
+            if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+              echo "::error::Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+              exit 1
+            fi
+          elif [[ -z "$NTFY_TOPIC" ]]; then
+            echo "::error::Set Telegram secrets or the NTFY_TOPIC fallback."
             exit 1
           fi
 

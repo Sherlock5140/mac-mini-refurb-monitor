@@ -6,7 +6,7 @@
 - 標準版 Apple M4（排除 M4 Pro、M4 Max）
 - 256GB 或 512GB SSD
 
-偵測新上架、重新補貨、降價與下架；下架必須連續兩次未出現才成立。通知透過 ntfy 傳送。
+偵測新上架、重新補貨、降價與下架；下架必須連續兩次未出現才成立。通知支援 Telegram，並保留 ntfy 作為選用備援。
 
 ## 運作方式
 
@@ -19,7 +19,20 @@
 
 > GitHub Actions 的 5 分鐘是最短排程間隔，不是準時保證；高負載時可能延遲或漏跑。
 
-## 設定 `NTFY_TOPIC`
+## 設定 Telegram
+
+1. 在 Telegram 對 `@BotFather` 傳送 `/newbot`。
+2. 依指示設定 Bot 名稱及以 `bot` 結尾的 username。
+3. 對新 Bot 傳送 `/start`。
+4. 在 GitHub repository 的 **Settings → Secrets and variables → Actions** 建立：
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+5. 前往 **Actions → Monitor Apple M4 Mac mini → Run workflow**。
+6. 勾選 `Send a test notification` 後執行。
+
+Bot Token 相當於密碼，不得貼在 issue、程式碼或 workflow log。
+
+## 選用 ntfy 備援
 
 1. 在 iPhone 的 ntfy App 訂閱一個長且不可猜測的 topic。
 2. 開啟 GitHub repository 的 **Settings → Secrets and variables → Actions**。
@@ -27,9 +40,9 @@
    - Name：`NTFY_TOPIC`
    - Secret：你的 ntfy topic 名稱（不要包含 `https://ntfy.sh/`）
 4. 前往 **Actions → Monitor Apple M4 Mac mini → Run workflow**。
-5. 勾選 `Send a test ntfy notification` 後執行。
+5. 勾選 `Send a test notification` 後執行。
 
-未設定 Secret 時 workflow 會明確失敗，避免商品狀態改變卻沒有通知。
+Telegram 與 ntfy 可以同時啟用；完全未設定通知 Secret 時 workflow 會明確失敗，避免商品狀態改變卻沒有通知。
 
 ## 本機驗證
 
@@ -42,6 +55,9 @@ python3 -m monitor.cli --state-file /tmp/mac-mini-monitor-state.json
 
 ```bash
 export NTFY_TOPIC="你的隨機-topic"
+# 或
+export TELEGRAM_BOT_TOKEN="BotFather 提供的 token"
+export TELEGRAM_CHAT_ID="你的 chat ID"
 ```
 
 ## 手動測試通知

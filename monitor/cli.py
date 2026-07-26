@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from .notify import NotificationError, publish
+from .notify import NotificationError, publish_ntfy, publish_telegram
 from .parser import parse_products
 from .state import (
     Event,
@@ -73,32 +73,64 @@ def fetch_html(timeout: int = 30) -> str:
         return response.read().decode(charset, errors="replace")
 
 
-def _send_all(topic: str, events: list[Event]) -> None:
+def _send_all(
+    events: list[Event],
+    *,
+    ntfy_topic: str,
+    telegram_bot_token: str,
+    telegram_chat_id: str,
+) -> None:
     for event in events:
-        publish(topic, event)
-        print(f"ntfy 已發送：{event.kind}")
+        if telegram_bot_token and telegram_chat_id:
+            publish_telegram(
+                telegram_bot_token,
+                telegram_chat_id,
+                event,
+            )
+            print(f"Telegram 已發送：{event.kind}")
+        if ntfy_topic:
+            publish_ntfy(ntfy_topic, event)
+            print(f"ntfy 已發送：{event.kind}")
 
 
-def run(state_path: Path, topic: str, send_test: bool = False) -> int:
-    if not topic:
+def run(
+    state_path: Path,
+    *,
+    ntfy_topic: str,
+    telegram_bot_token: str,
+    telegram_chat_id: str,
+    send_test: bool = False,
+) -> int:
+    telegram_partial = bool(telegram_bot_token) != bool(telegram_chat_id)
+    if telegram_partial:
         print(
-            "錯誤：尚未設定 NTFY_TOPIC GitHub Actions Secret。",
+            "錯誤：TELEGRAM_BOT_TOKEN 與 TELEGRAM_CHAT_ID 必須同時設定。",
+            file=sys.stderr,
+        )
+        return 2
+    if not ntfy_topic and not telegram_bot_token:
+        print(
+            "錯誤：尚未設定 Telegram 或 ntfy 通知 Secret。",
             file=sys.stderr,
         )
         return 2
 
     if send_test:
-        publish(
-            topic,
-            Event(
-                kind="test",
-                title="Mac mini 監控測試成功",
-                message="GitHub Actions 已能透過 ntfy 傳送通知。",
-                priority=4,
-                tags=("white_check_mark", "computer"),
-            ),
+        _send_all(
+            [
+                Event(
+                    kind="test",
+                    title="Mac mini 監控測試成功",
+                    message="GitHub Actions 已能正常傳送監控通知。",
+                    priority=4,
+                    tags=("white_check_mark", "computer"),
+                )
+            ],
+            ntfy_topic=ntfy_topic,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
         )
-        print("ntfy 測試通知已發送")
+        print("測試通知已發送")
 
     state = load_state(state_path)
     previous_errors = int(state.get("consecutive_errors", 0))
@@ -122,7 +154,12 @@ def run(state_path: Path, topic: str, send_test: bool = False) -> int:
         elif not state.get("initialized"):
             updated["last_heartbeat_date"] = today
 
-        _send_all(topic, events)
+        _send_all(
+            events,
+            ntfy_topic=ntfy_topic,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
+        )
         save_state(state_path, updated)
         print(
             f"監控成功：解析到 {len(products)} 項符合條件的商品，"
@@ -135,7 +172,12 @@ def run(state_path: Path, topic: str, send_test: bool = False) -> int:
     except Exception as error:
         updated, events = apply_error(state, str(error))
         try:
-            _send_all(topic, events)
+            _send_all(
+                events,
+                ntfy_topic=ntfy_topic,
+                telegram_bot_token=telegram_bot_token,
+                telegram_chat_id=telegram_chat_id,
+            )
         finally:
             save_state(state_path, updated)
         print(f"監控失敗：{error}", file=sys.stderr)
@@ -159,11 +201,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = build_parser().parse_args()
-    topic = os.environ.get("NTFY_TOPIC", "").strip()
     try:
         return run(
             state_path=arguments.state_file,
-            topic=topic,
+            ntfy_topic=os.environ.get("NTFY_TOPIC", "").strip(),
+            telegram_bot_token=os.environ.get(
+                "TELEGRAM_BOT_TOKEN", ""
+            ).strip(),
+            telegram_chat_id=os.environ.get(
+                "TELEGRAM_CHAT_ID", ""
+            ).strip(),
             send_test=arguments.test_notification,
         )
     except (NotificationError, OSError, RuntimeError, json.JSONDecodeError) as error:
