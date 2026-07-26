@@ -46,6 +46,9 @@ Cloudflare Worker webhook 讓 Bot 能在幾秒內回覆，不需等待下一次 
 
 Worker 僅接受設定在 `TELEGRAM_CHAT_ID` 的私人帳號，並使用 Telegram webhook secret 驗證來源。商品通知與查詢結果都會附上 Apple 購買連結。
 
+Cloudflare 後台另提供受 `ADMIN_TEST_TOKEN` 保護的
+`POST /admin/test`，可在不開啟 Telegram 的情況下測試手機推播。
+
 目前部署：
 
 - Worker：<https://mac-mini-refurb-monitor-bot.sherlock5140-mac-monitor.workers.dev>

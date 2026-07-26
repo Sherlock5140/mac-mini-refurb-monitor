@@ -149,6 +149,18 @@ test("rejects webhook requests without the Telegram secret header", async () => 
   assert.equal(response.status, 401);
 });
 
+test("rejects backend notification tests without the admin token", async () => {
+  const response = await worker.fetch(
+    new Request("https://worker.example/admin/test", {
+      method: "POST",
+    }),
+    { ADMIN_TEST_TOKEN: "expected-secret" },
+    { waitUntil() {} },
+  );
+
+  assert.equal(response.status, 401);
+});
+
 function target({
   sku = "FMINITA/A",
   priceTwd = 17000,

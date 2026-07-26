@@ -369,6 +369,24 @@ async function sendMonitorEvents(env, events) {
   }
 }
 
+async function sendTestNotification(env) {
+  const snapshot = await fetchInventory(fetch);
+  await sendMonitorEvents(env, [
+    {
+      kind: "test",
+      title: "✅ Cloudflare 後台推播測試成功",
+      message: [
+        "這則訊息由 Cloudflare 直接發送，未經 Telegram 指令觸發。",
+        "主動通知通道、Apple 解析與 Telegram 均正常。",
+        "",
+        formatInventorySummary(snapshot),
+      ].join("\n"),
+      url: APPLE_REFURB_URL,
+    },
+  ]);
+  return snapshot;
+}
+
 async function loadMonitorState(env) {
   const row = await env.MONITOR_DB.prepare(
     `SELECT
@@ -579,19 +597,7 @@ async function handleTelegramUpdate(update, env) {
     .toLowerCase();
   if (command === "/test") {
     try {
-      const snapshot = await fetchInventory(fetch);
-      await sendMonitorEvents(env, [
-        {
-          kind: "test",
-          title: "✅ Cloudflare 監控測試成功",
-          message: [
-            "主動通知通道、Apple 解析與 Telegram 均正常。",
-            "",
-            formatInventorySummary(snapshot),
-          ].join("\n"),
-          url: APPLE_REFURB_URL,
-        },
-      ]);
+      await sendTestNotification(env);
     } catch (error) {
       await telegramRequest(env, "sendMessage", {
         chat_id: message.chat.id,
@@ -647,6 +653,38 @@ export default {
         scheduler: "*/5 * * * *",
         monitor,
       });
+    }
+    if (request.method === "POST" && url.pathname === "/admin/test") {
+      if (
+        request.headers.get("Authorization") !==
+        `Bearer ${env.ADMIN_TEST_TOKEN}`
+      ) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      try {
+        const snapshot = await sendTestNotification(env);
+        return Response.json({
+          ok: true,
+          sent: true,
+          totalProductCount: snapshot.totalProductCount,
+          macProductCount: snapshot.macProductCount,
+          macMiniCount: snapshot.macMiniCount,
+          targetProductCount: snapshot.targetProducts.length,
+        });
+      } catch (error) {
+        console.error(
+          `後台測試失敗：${
+            error instanceof Error ? error.message : "unknown"
+          }`,
+        );
+        return Response.json(
+          {
+            ok: false,
+            error: "Notification test failed",
+          },
+          { status: 502 },
+        );
+      }
     }
     if (request.method !== "POST" || url.pathname !== "/telegram") {
       return new Response("Not found", { status: 404 });
