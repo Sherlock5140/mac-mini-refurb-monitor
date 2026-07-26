@@ -126,7 +126,10 @@ export function applyMonitorError(
   state,
   message,
   nowIso,
-  { label = "Mac mini" } = {},
+  {
+    label = "Mac mini",
+    notifyAt = [1, 3, 6],
+  } = {},
 ) {
   const updated = clone(state);
   updated.consecutiveErrors =
@@ -135,7 +138,7 @@ export function applyMonitorError(
   updated.lastError = String(message).slice(0, 500);
   const count = updated.consecutiveErrors;
   const events = [];
-  if ([1, 3, 6].includes(count)) {
+  if (notifyAt.includes(count)) {
     events.push({
       kind: "error",
       title: `⚠️ ${label} 監控異常`,
@@ -148,9 +151,13 @@ export function applyMonitorError(
 
 export function recoveryEvent(
   previousErrorCount,
-  { label = "Mac mini", source = "Apple" } = {},
+  {
+    label = "Mac mini",
+    source = "Apple",
+    minimumErrorCount = 1,
+  } = {},
 ) {
-  if (previousErrorCount <= 0) {
+  if (previousErrorCount < minimumErrorCount) {
     return null;
   }
   return {

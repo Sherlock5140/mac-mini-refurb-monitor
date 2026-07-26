@@ -1443,6 +1443,8 @@ async function runSourceMonitor(env, {
   notifyOnBaseline = true,
   inventoryEventKinds = null,
   sendDailyHeartbeat = true,
+  errorNotificationCounts = [1, 3, 6],
+  recoveryNotificationMinimumErrors = 1,
 }) {
   const original = await loadMonitorState(env, source);
   const previousErrorCount = original.consecutiveErrors;
@@ -1474,6 +1476,7 @@ async function runSourceMonitor(env, {
     const recovered = recoveryEvent(previousErrorCount, {
       label,
       source: sourceName,
+      minimumErrorCount: recoveryNotificationMinimumErrors,
     });
     if (recovered) {
       events.unshift(recovered);
@@ -1526,6 +1529,7 @@ async function runSourceMonitor(env, {
       error instanceof Error ? error.message : "未知監控錯誤";
     const result = applyMonitorError(original, message, nowIso, {
       label,
+      notifyAt: errorNotificationCounts,
     });
     let notificationError = null;
     try {
@@ -1587,6 +1591,8 @@ export async function runScheduledMonitor(env) {
       fetchSnapshot: () =>
         fetchCoupangInventory(env.BROWSER, env.AI),
       formatSummary: formatCoupangSummary,
+      errorNotificationCounts: [3, 6],
+      recoveryNotificationMinimumErrors: 3,
     }),
   ]);
   return {
@@ -1609,6 +1615,8 @@ export async function runSonyScheduledMonitor(env) {
     formatSummary: formatCoupangSonySummary,
     inventoryEventKinds: ["price_drop"],
     sendDailyHeartbeat: false,
+    errorNotificationCounts: [3, 6],
+    recoveryNotificationMinimumErrors: 3,
   });
 }
 

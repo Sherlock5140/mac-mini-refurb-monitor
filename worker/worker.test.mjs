@@ -839,3 +839,39 @@ test("Cloudflare throttles errors and reports recovery", () => {
   assert.equal(recoveryEvent(7).kind, "recovered");
   assert.equal(recoveryEvent(0), null);
 });
+
+test("Coupang transient blocks notify only after three failures", () => {
+  let state = emptyMonitorState();
+  const emitted = [];
+  for (let count = 1; count <= 6; count += 1) {
+    const result = applyMonitorError(
+      state,
+      "酷澎暫時拒絕 Cloudflare 存取",
+      `2026-07-26T13:${String(count).padStart(2, "0")}:00.000Z`,
+      {
+        label: "酷澎",
+        notifyAt: [3, 6],
+      },
+    );
+    state = result.state;
+    emitted.push(...result.events.map((event) => event.kind));
+  }
+
+  assert.deepEqual(emitted, ["error", "error"]);
+  assert.equal(
+    recoveryEvent(2, {
+      label: "酷澎",
+      source: "酷澎",
+      minimumErrorCount: 3,
+    }),
+    null,
+  );
+  assert.equal(
+    recoveryEvent(3, {
+      label: "酷澎",
+      source: "酷澎",
+      minimumErrorCount: 3,
+    }).kind,
+    "recovered",
+  );
+});
