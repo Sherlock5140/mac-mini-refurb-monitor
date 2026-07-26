@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   APPLE_REFURB_URL,
   COUPANG_SEARCH_URL,
+  COUPANG_SONY_SEARCH_URL,
   COSTCO_DESKTOP_URL,
   PCHOME_SEARCH_URL,
   buildBaselineInventoryEvent,
@@ -11,14 +12,17 @@ import {
   default as worker,
   formatInventorySummary,
   formatCoupangSummary,
+  formatCoupangSonySummary,
   formatCostcoSummary,
   formatPchomeSummary,
   formatPurchaseMessage,
   parseAppleInventory,
   parseCoupangInventory,
+  parseCoupangSonyInventory,
   parseCostcoInventory,
   parsePchomeInventory,
   replyForCommand,
+  filterInventoryEvents,
 } from "./worker.js";
 import {
   applyInventory,
@@ -151,12 +155,13 @@ function coupangCard({
   name,
   vendorItemId,
   productId,
+  itemId = productId,
   price,
   available = true,
 }) {
   return [
     `<li class="ProductUnit_productUnit__Qd6sv" data-id="${vendorItemId}">`,
-    `<a href="/products/${productId}?itemId=${productId}&amp;vendorItemId=${vendorItemId}">`,
+    `<a href="/products/${productId}?itemId=${itemId}&amp;vendorItemId=${vendorItemId}">`,
     `<div class="ProductUnit_productNameV2__cV9cw">${name}</div>`,
     '<div class="PriceArea_priceArea__NntJz">',
     available
@@ -187,6 +192,30 @@ const coupangHtml = [
     productId: "563199703220226",
     price: 25900,
     available: false,
+  }),
+].join("");
+
+const coupangSonyHtml = [
+  coupangCard({
+    name: "SONY 索尼 Wireless 主動降噪 耳罩式 耳機 40H Playtime 銀色 WH-1000XM6 原廠保固12個月",
+    vendorItemId: "626209201193059",
+    productId: "626209205272694",
+    itemId: "626209205403651",
+    price: 10791,
+  }),
+  coupangCard({
+    name: "SONY 索尼 Wireless 主動降噪 耳罩式 耳機 40H Playtime 黑色 WH-1000XM6 原廠保固12個月",
+    vendorItemId: "626209205272648",
+    productId: "626209205272694",
+    itemId: "626209205305462",
+    price: 10691,
+  }),
+  coupangCard({
+    name: "SONY 索尼 Wireless 主動降噪 入耳式 耳機 鉑金銀色 WF-1000XM6 原廠保固12個月",
+    vendorItemId: "663152630808667",
+    productId: "663152630825069",
+    itemId: "663152630841453",
+    price: 8290,
   }),
 ].join("");
 
@@ -315,6 +344,44 @@ test("formats Coupang live stock and purchase links", () => {
   assert.ok(summary.includes(COUPANG_SEARCH_URL));
 });
 
+test("parses only the exact silver Sony WH-1000XM6 target", () => {
+  const snapshot = parseCoupangSonyInventory(coupangSonyHtml);
+
+  assert.equal(snapshot.totalProductCount, 3);
+  assert.equal(snapshot.targetProducts.length, 1);
+  assert.deepEqual(snapshot.targetProducts[0], {
+    sku: "SONY-626209205403651",
+    name: "SONY 索尼 Wireless 主動降噪 耳罩式 耳機 40H Playtime 銀色 WH-1000XM6 原廠保固12個月",
+    details: "銀色｜WH-1000XM6｜原廠保固 12 個月",
+    priceTwd: 10791,
+    url: "https://www.tw.coupang.com/products/626209205272694?itemId=626209205403651&vendorItemId=626209201193059",
+  });
+});
+
+test("formats the Sony price tracker and direct purchase link", () => {
+  const summary = formatCoupangSonySummary(
+    parseCoupangSonyInventory(coupangSonyHtml),
+  );
+
+  assert.match(summary, /Sony WH-1000XM6 降價追蹤/);
+  assert.match(summary, /NT\$10,791/);
+  assert.match(summary, /價格不變不重複通知/);
+  assert.ok(summary.includes(COUPANG_SONY_SEARCH_URL));
+});
+
+test("Sony tracker keeps only price-drop inventory events", () => {
+  const events = [
+    { kind: "new" },
+    { kind: "price_drop" },
+    { kind: "removed" },
+  ];
+
+  assert.deepEqual(
+    filterInventoryEvents(events, ["price_drop"]),
+    [{ kind: "price_drop" }],
+  );
+});
+
 test("backend test notifications contain one compact purchase link", () => {
   const event = buildTestNotificationEvent(
     parseAppleInventory(sampleHtml),
@@ -424,6 +491,26 @@ test("answers Coupang commands through Cloudflare Browser Run", async () => {
   assert.ok(reply.includes(COUPANG_SEARCH_URL));
 });
 
+test("answers Sony commands through Cloudflare Browser Run", async () => {
+  const fakeBrowser = {
+    quickAction: async () =>
+      Response.json({
+        success: true,
+        result: coupangSonyHtml,
+        meta: { status: 200 },
+      }),
+  };
+  const reply = await replyForCommand(
+    "/sony",
+    fetch,
+    null,
+    fakeBrowser,
+  );
+
+  assert.match(reply, /WH-1000XM6 降價追蹤/);
+  assert.match(reply, /NT\$10,791/);
+});
+
 test("reports Cloudflare scheduler state in status commands", async () => {
   const fakeFetch = async () =>
     new Response(sampleHtml, {
@@ -443,7 +530,8 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /Apple 排程：正常/);
   assert.match(reply, /Costco 排程：等待第一次執行/);
   assert.match(reply, /酷澎 排程：等待第一次執行/);
-  assert.match(reply, /每 5 分鐘同時檢查四個來源/);
+  assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
+  assert.match(reply, /Sony 耳機價格/);
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
@@ -454,6 +542,7 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/costco－立即查詢 Costco 台灣庫存與價格/);
   assert.match(reply, /\/pchome－立即查詢 PChome 24h 庫存與價格/);
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
+  assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
 });
 
 test("rejects a product page that contains no Mac", () => {
@@ -557,6 +646,30 @@ test("Cloudflare detects new, restocked, and cheaper products", () => {
     "2026-07-26T10:25:00.000Z",
   );
   assert.deepEqual(result.events.map((item) => item.kind), ["price_drop"]);
+});
+
+test("Sony price-drop messages use headphone details", () => {
+  const sony = {
+    sku: "SONY-626209205403651",
+    name: "SONY 索尼 WH-1000XM6",
+    details: "銀色｜WH-1000XM6｜原廠保固 12 個月",
+    priceTwd: 10791,
+    url: COUPANG_SONY_SEARCH_URL,
+  };
+  let result = applyInventory(
+    emptyMonitorState(),
+    [sony],
+    "2026-07-26T10:00:00.000Z",
+  );
+  result = applyInventory(
+    result.state,
+    [{ ...sony, priceTwd: 10591 }],
+    "2026-07-26T10:05:00.000Z",
+  );
+
+  assert.equal(result.events[0].kind, "price_drop");
+  assert.match(result.events[0].message, /銀色｜WH-1000XM6/);
+  assert.doesNotMatch(result.events[0].message, /undefinedGB SSD/);
 });
 
 test("labels Costco inventory events separately", () => {

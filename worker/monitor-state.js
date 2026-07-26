@@ -19,9 +19,11 @@ function displayProduct(product) {
   const memory = product.memoryGb
     ? `、${product.memoryGb}GB 記憶體`
     : "";
+  const details = product.details ??
+    `${product.storageGb}GB SSD${memory}`;
   return [
     product.name,
-    `${product.storageGb}GB SSD${memory}`,
+    details,
     `NT$${product.priceTwd.toLocaleString("en-US")}`,
   ].join("\n");
 }

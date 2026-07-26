@@ -16,6 +16,11 @@ const PCHOME_ORIGIN = "https://24h.pchome.com.tw";
 const COUPANG_SEARCH_URL =
   "https://www.tw.coupang.com/srp/mac-mini?q=mac%20mini%20m4";
 const COUPANG_ORIGIN = "https://www.tw.coupang.com";
+const COUPANG_SONY_SEARCH_URL =
+  "https://www.tw.coupang.com/srp/wh-1000xm6?q=WH-1000XM6";
+const MAC_MONITOR_CRON = "*/5 * * * *";
+const SONY_MONITOR_CRON =
+  "2,7,12,17,22,27,32,37,42,47,52,57 * * * *";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const SOURCE_TABLES = {
   apple: {
@@ -33,6 +38,10 @@ const SOURCE_TABLES = {
   coupang: {
     state: "coupang_monitor_state",
     runs: "coupang_monitor_runs",
+  },
+  sony: {
+    state: "sony_monitor_state",
+    runs: "sony_monitor_runs",
   },
 };
 
@@ -428,7 +437,7 @@ function coupangTargetProduct(product) {
   };
 }
 
-export function parseCoupangInventory(html) {
+function parseCoupangCards(html) {
   const starts = [
     ...html.matchAll(
       /<li\b[^>]*\bclass=["'][^"']*\bProductUnit_productUnit__[^"']*["'][^>]*>/gi,
@@ -466,8 +475,10 @@ export function parseCoupangInventory(html) {
     const priceTwd = priceMatch
       ? Number(priceMatch[1].replaceAll(",", ""))
       : null;
+    const itemId = path.match(/[?&]itemId=(\d+)/i)?.[1] ?? null;
     products.push({
       sku: skuMatch[1],
+      itemId,
       name,
       url: new URL(path, COUPANG_ORIGIN).href,
       priceTwd,
@@ -479,7 +490,11 @@ export function parseCoupangInventory(html) {
   if (products.length === 0) {
     throw new Error("酷澎商品卡片缺少名稱、連結或商品編號");
   }
+  return products;
+}
 
+export function parseCoupangInventory(html) {
+  const products = parseCoupangCards(html);
   const targets = new Map();
   for (const product of products) {
     const target = coupangTargetProduct(product);
@@ -500,6 +515,41 @@ export function parseCoupangInventory(html) {
     deviceCounts: macMinis.length
       ? [["Mac mini", macMinis.length]]
       : [],
+    targetProducts: [...targets.values()].sort((a, b) =>
+      a.sku.localeCompare(b.sku),
+    ),
+  };
+}
+
+export function parseCoupangSonyInventory(html) {
+  const products = parseCoupangCards(html);
+  const targets = new Map();
+  for (const product of products) {
+    if (
+      !/SONY\s+索尼/i.test(product.name) ||
+      !/\bWH-1000XM6\b/i.test(product.name) ||
+      !/銀色/.test(product.name) ||
+      !/原廠保固\s*12\s*個月/i.test(product.name) ||
+      !product.itemId ||
+      !product.available ||
+      !Number.isFinite(product.priceTwd)
+    ) {
+      continue;
+    }
+    const target = {
+      sku: `SONY-${product.itemId}`,
+      name: product.name,
+      details: "銀色｜WH-1000XM6｜原廠保固 12 個月",
+      priceTwd: product.priceTwd,
+      url: product.url,
+    };
+    targets.set(target.sku, target);
+  }
+  return {
+    totalProductCount: products.length,
+    macProductCount: 0,
+    macMiniCount: 0,
+    deviceCounts: [],
     targetProducts: [...targets.values()].sort((a, b) =>
       a.sku.localeCompare(b.sku),
     ),
@@ -679,6 +729,37 @@ export function formatCoupangSummary(
   return lines.join("\n");
 }
 
+export function formatCoupangSonySummary(
+  snapshot,
+  { includePurchaseLink = true } = {},
+) {
+  const productLines = snapshot.targetProducts.length
+    ? snapshot.targetProducts.flatMap((product, index) => [
+        `${index + 1}. 銀色 WH-1000XM6｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
+        product.url,
+      ])
+    : ["目前沒有找到指定的銀色 WH-1000XM6 有貨商品。"];
+  const lines = [
+    "🎧 酷澎 Sony WH-1000XM6 降價追蹤",
+    "",
+    "🎯 追蹤結果",
+    `指定商品：${snapshot.targetProducts.length} 項`,
+    "",
+    "⚙️ 精確條件",
+    "SONY｜WH-1000XM6｜銀色｜原廠保固 12 個月",
+    "比較公開未登入售價，不含個人首購、會員或信用卡優惠。",
+    "價格不變不重複通知，只在價格降低時推播。",
+    "",
+    ...productLines,
+    "",
+    `查詢時間：${taipeiTime()}`,
+  ];
+  if (includePurchaseLink) {
+    lines.push("", `🛒 酷澎搜尋頁：${COUPANG_SONY_SEARCH_URL}`);
+  }
+  return lines.join("\n");
+}
+
 function helpMessage() {
   return [
     "🤖 M4 Mac mini 監控指令",
@@ -687,8 +768,9 @@ function helpMessage() {
     "/costco－立即查詢 Costco 台灣庫存與價格",
     "/pchome－立即查詢 PChome 24h 庫存與價格",
     "/coupang－立即查詢酷澎庫存、價格與購買連結",
+    "/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格",
     "/buy－列出符合條件的商品與購買連結",
-    "/status－確認四個購物站的排程狀態",
+    "/status－確認所有商品與購物站的排程狀態",
     "/test－傳送一則 Cloudflare 主動通知測試",
     "/link－開啟 Apple 整修 Mac 購買頁",
     "/help－顯示這份說明",
@@ -755,12 +837,12 @@ async function fetchPchomeInventory(fetchImpl) {
   return parsePchomeInventory(await response.text());
 }
 
-async function fetchCoupangInventory(browser) {
+async function fetchCoupangPage(browser, url, label) {
   if (!browser?.quickAction) {
     throw new Error("Cloudflare Browser Run 尚未設定");
   }
   const response = await browser.quickAction("content", {
-    url: COUPANG_SEARCH_URL,
+    url,
     gotoOptions: {
       waitUntil: "domcontentloaded",
       timeout: 30000,
@@ -774,7 +856,7 @@ async function fetchCoupangInventory(browser) {
     ],
   });
   if (!response.ok) {
-    throw new Error(`酷澎 Browser Run HTTP ${response.status}`);
+    throw new Error(`${label} Browser Run HTTP ${response.status}`);
   }
   const payload = await response.json().catch(() => null);
   if (
@@ -783,10 +865,28 @@ async function fetchCoupangInventory(browser) {
     typeof payload?.result !== "string"
   ) {
     throw new Error(
-      `酷澎頁面載入失敗（HTTP ${payload?.meta?.status ?? "unknown"}）`,
+      `${label}頁面載入失敗（HTTP ${payload?.meta?.status ?? "unknown"}）`,
     );
   }
-  return parseCoupangInventory(payload.result);
+  return payload.result;
+}
+
+async function fetchCoupangInventory(browser) {
+  const html = await fetchCoupangPage(
+    browser,
+    COUPANG_SEARCH_URL,
+    "酷澎 Mac mini",
+  );
+  return parseCoupangInventory(html);
+}
+
+async function fetchCoupangSonyInventory(browser) {
+  const html = await fetchCoupangPage(
+    browser,
+    COUPANG_SONY_SEARCH_URL,
+    "酷澎 Sony",
+  );
+  return parseCoupangSonyInventory(html);
 }
 
 function scheduleStatusLine(label, monitor) {
@@ -833,7 +933,9 @@ export async function replyForCommand(
       "",
       scheduleStatusLine("酷澎", monitor?.coupang),
       "",
-      "自動監控：Cloudflare 每 5 分鐘同時檢查四個來源。",
+      scheduleStatusLine("酷澎 Sony", monitor?.sony),
+      "",
+      "自動監控：Cloudflare 每 5 分鐘檢查四站 Mac mini 與 Sony 耳機價格。",
     ].join("\n");
   }
   if (command === "/check") {
@@ -855,6 +957,11 @@ export async function replyForCommand(
   if (command === "/coupang") {
     return formatCoupangSummary(
       await fetchCoupangInventory(browser),
+    );
+  }
+  if (command === "/sony") {
+    return formatCoupangSonySummary(
+      await fetchCoupangSonyInventory(browser),
     );
   }
   return `不支援這個指令。\n\n${helpMessage()}`;
@@ -1126,18 +1233,28 @@ export function buildBaselineInventoryEvent(
 }
 
 async function monitorStatus(env) {
-  const [apple, costco, pchome, coupang] = await Promise.all([
+  const [apple, costco, pchome, coupang, sony] = await Promise.all([
     loadMonitorState(env, "apple"),
     loadMonitorState(env, "costco"),
     loadMonitorState(env, "pchome"),
     loadMonitorState(env, "coupang"),
+    loadMonitorState(env, "sony"),
   ]);
   return {
     apple: stateStatus(apple),
     costco: stateStatus(costco),
     pchome: stateStatus(pchome),
     coupang: stateStatus(coupang),
+    sony: stateStatus(sony),
   };
+}
+
+export function filterInventoryEvents(events, allowedKinds = null) {
+  if (!allowedKinds) {
+    return events;
+  }
+  const allowed = new Set(allowedKinds);
+  return events.filter((event) => allowed.has(event.kind));
 }
 
 async function runSourceMonitor(env, {
@@ -1148,6 +1265,8 @@ async function runSourceMonitor(env, {
   fetchSnapshot,
   formatSummary,
   notifyOnBaseline = true,
+  inventoryEventKinds = null,
+  sendDailyHeartbeat = true,
 }) {
   const original = await loadMonitorState(env, source);
   const previousErrorCount = original.consecutiveErrors;
@@ -1162,7 +1281,10 @@ async function runSourceMonitor(env, {
       { label },
     );
     const updated = result.state;
-    const events = result.events;
+    const events = filterInventoryEvents(
+      result.events,
+      inventoryEventKinds,
+    );
     if (notifyOnBaseline && !original.initialized) {
       const baselineEvent = buildBaselineInventoryEvent(snapshot, {
         label,
@@ -1183,6 +1305,7 @@ async function runSourceMonitor(env, {
 
     const today = taipeiDate();
     if (
+      sendDailyHeartbeat &&
       original.initialized &&
       updated.lastHeartbeatDate !== today
     ) {
@@ -1296,6 +1419,19 @@ export async function runScheduledMonitor(env) {
   };
 }
 
+export async function runSonyScheduledMonitor(env) {
+  return runSourceMonitor(env, {
+    source: "sony",
+    label: "酷澎 Sony WH-1000XM6",
+    sourceName: "酷澎 Sony",
+    purchaseUrl: COUPANG_SONY_SEARCH_URL,
+    fetchSnapshot: () => fetchCoupangSonyInventory(env.BROWSER),
+    formatSummary: formatCoupangSonySummary,
+    inventoryEventKinds: ["price_drop"],
+    sendDailyHeartbeat: false,
+  });
+}
+
 async function handleTelegramUpdate(update, env) {
   const message = update?.message;
   if (!message?.text || message.chat?.id === undefined) {
@@ -1337,6 +1473,7 @@ async function handleTelegramUpdate(update, env) {
       "/costco": COSTCO_DESKTOP_URL,
       "/pchome": PCHOME_SEARCH_URL,
       "/coupang": COUPANG_SEARCH_URL,
+      "/sony": COUPANG_SONY_SEARCH_URL,
     }[command] ?? APPLE_REFURB_URL;
     reply = [
       "⚠️ 即時查詢暫時失敗",
@@ -1370,7 +1507,10 @@ export default {
       return Response.json({
         ok: true,
         service: "mac-mini-refurb-monitor-bot",
-        scheduler: "*/5 * * * *",
+        scheduler: {
+          macMini: MAC_MONITOR_CRON,
+          sony: SONY_MONITOR_CRON,
+        },
         monitor,
       });
     }
@@ -1455,8 +1595,11 @@ export default {
     return new Response("OK");
   },
 
-  async scheduled(_controller, env, context) {
-    context.waitUntil(runScheduledMonitor(env));
+  async scheduled(controller, env, context) {
+    const task = controller.cron === SONY_MONITOR_CRON
+      ? runSonyScheduledMonitor(env)
+      : runScheduledMonitor(env);
+    context.waitUntil(task);
   },
 };
 
@@ -1464,5 +1607,8 @@ export {
   APPLE_REFURB_URL,
   COSTCO_DESKTOP_URL,
   COUPANG_SEARCH_URL,
+  COUPANG_SONY_SEARCH_URL,
+  MAC_MONITOR_CRON,
   PCHOME_SEARCH_URL,
+  SONY_MONITOR_CRON,
 };

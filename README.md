@@ -1,4 +1,4 @@
-# 台灣四站 M4 Mac mini 庫存監控
+# 台灣購物站商品與降價監控
 
 每 5 分鐘同時檢查
 [Apple 台灣認證整修品 Mac 頁面](https://www.apple.com/tw/shop/refurbished/mac)
@@ -11,11 +11,19 @@
 - 標準版 Apple M4（排除 M4 Pro、M4 Max）
 - 256GB 或 512GB SSD
 
-偵測新上架、重新補貨、降價與下架；下架必須連續兩次未出現才成立。通知支援 Telegram，並保留 ntfy 作為選用備援。
+另以酷澎精確追蹤銀色 Sony WH-1000XM6（原廠保固 12 個月）的
+價格。Mac mini 偵測新上架、重新補貨、降價與下架；Sony 建立目前
+價格基準後只在價格降低時發送商品通知。通知支援 Telegram，並保留
+ntfy 作為選用備援。
+
+Sony 比較酷澎公開未登入搜尋價，不包含依帳號而異的首購、WOW
+會員、酷澎幣或信用卡優惠。
 
 ## 運作方式
 
-- Cloudflare Cron Trigger 在整點起每 5 分鐘執行（`00、05、10……55`）。
+- Mac mini 排程在 `00、05、10……55` 分執行；Sony 排程錯開至
+  `02、07、12……57` 分，兩者都每 5 分鐘一次，避免免費 Browser
+  Run 同時啟動瀏覽器而被限流。
 - 從 Apple 的 `application/ld+json`、Costco、PChome 與酷澎商品卡片解析商品。
 - 酷澎會阻擋一般伺服器 HTTP 請求；系統改用 Cloudflare Browser Run 取得公開頁面，並封鎖圖片、樣式、字型與 JavaScript，只讀初始商品 HTML。
 - Costco 與 PChome 以商品能加入購物車為有貨判定；酷澎以有效售價且沒有缺貨標記為有貨判定。
@@ -48,8 +56,9 @@ Cloudflare Worker webhook 讓 Bot 能在幾秒內回覆，不需等待下一次 
 - `/costco`：立即查詢 Costco 台灣 M4 Mac mini 庫存、價格與購買連結
 - `/pchome`：立即查詢 PChome 24h M4 Mac mini 庫存、價格與購買連結
 - `/coupang`：立即查詢酷澎 M4 Mac mini 庫存、價格與購買連結
+- `/sony`：立即查詢酷澎銀色 Sony WH-1000XM6 目前價格
 - `/buy`：列出符合條件的商品與直接購買連結
-- `/status`：確認即時 Bot 與四個購物站的排程監控狀態
+- `/status`：確認即時 Bot、四站 Mac mini 與 Sony 降價追蹤狀態
 - `/test`：傳送一則與正式事件相同路徑的主動通知測試
 - `/link`：顯示 Apple 台灣整修 Mac 購買頁
 - `/help`：顯示指令說明
@@ -68,9 +77,9 @@ Cloudflare 後台另提供受 `ADMIN_TEST_TOKEN` 保護的
 
 Cloudflare Workers Free 方案提供每日 100,000 次請求；Browser Run Free
 方案提供每日 10 分鐘瀏覽器時間。每 5 分鐘的單一 Cron 每日約 288
-次。酷澎最佳化後的實測瀏覽器用量約 0.3 秒／次，估算每日約 1.5
-分鐘；實際值會隨網站回應時間浮動，仍保留充足免費額度供 `/coupang`
-即時查詢使用。
+次。酷澎最佳化後的實測瀏覽器用量約 0.3 秒／頁；Mac mini 與 Sony
+各讀取一個搜尋頁，估算每日合計約 3 分鐘。實際值會隨網站回應時間
+浮動，仍低於每日 10 分鐘免費額度。
 
 ## Cloudflare 部署
 
@@ -82,7 +91,7 @@ npx wrangler deploy
 
 正式部署使用：
 
-- Worker：Telegram webhook、即時指令與四站定時監控
+- Worker：Telegram webhook、即時指令、四站 Mac mini 與 Sony 降價監控
 - Browser Run：讀取會阻擋一般伺服器 HTTP 的酷澎公開商品頁
 - Cron Trigger：每 5 分鐘巡查
 - D1：商品狀態、錯誤次數、最近成功時間與 7 天執行紀錄
