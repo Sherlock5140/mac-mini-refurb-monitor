@@ -1103,6 +1103,28 @@ function stateStatus(state) {
   };
 }
 
+export function buildBaselineInventoryEvent(
+  snapshot,
+  {
+    label,
+    purchaseUrl,
+    formatSummary,
+  },
+) {
+  if (snapshot.targetProducts.length === 0) {
+    return null;
+  }
+  return {
+    kind: "baseline_available",
+    title: `🟢 ${label} 目前有貨`,
+    message: formatSummary(snapshot, {
+      includePurchaseLink: false,
+    }),
+    url: purchaseUrl,
+    disablePreview: true,
+  };
+}
+
 async function monitorStatus(env) {
   const [apple, costco, pchome, coupang] = await Promise.all([
     loadMonitorState(env, "apple"),
@@ -1125,6 +1147,7 @@ async function runSourceMonitor(env, {
   purchaseUrl,
   fetchSnapshot,
   formatSummary,
+  notifyOnBaseline = true,
 }) {
   const original = await loadMonitorState(env, source);
   const previousErrorCount = original.consecutiveErrors;
@@ -1140,6 +1163,16 @@ async function runSourceMonitor(env, {
     );
     const updated = result.state;
     const events = result.events;
+    if (notifyOnBaseline && !original.initialized) {
+      const baselineEvent = buildBaselineInventoryEvent(snapshot, {
+        label,
+        purchaseUrl,
+        formatSummary,
+      });
+      if (baselineEvent) {
+        events.push(baselineEvent);
+      }
+    }
     const recovered = recoveryEvent(previousErrorCount, {
       label,
       source: sourceName,

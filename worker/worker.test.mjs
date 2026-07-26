@@ -6,6 +6,7 @@ import {
   COUPANG_SEARCH_URL,
   COSTCO_DESKTOP_URL,
   PCHOME_SEARCH_URL,
+  buildBaselineInventoryEvent,
   buildTestNotificationEvent,
   default as worker,
   formatInventorySummary,
@@ -330,6 +331,35 @@ test("backend test notifications contain one compact purchase link", () => {
     event.message.indexOf("✅ 主動通知通道") <
       event.message.indexOf("🎯 監控結果"),
   );
+});
+
+test("first baseline reports matching inventory without calling it new", () => {
+  const snapshot = parseCoupangInventory(coupangHtml);
+  const event = buildBaselineInventoryEvent(snapshot, {
+    label: "酷澎 M4 Mac mini",
+    purchaseUrl: COUPANG_SEARCH_URL,
+    formatSummary: formatCoupangSummary,
+  });
+
+  assert.equal(event.kind, "baseline_available");
+  assert.match(event.title, /目前有貨/);
+  assert.doesNotMatch(event.title, /新上架/);
+  assert.match(event.message, /NT\$33,900/);
+  assert.equal(event.url, COUPANG_SEARCH_URL);
+});
+
+test("first baseline stays quiet when no product matches", () => {
+  const snapshot = {
+    ...parseCoupangInventory(coupangHtml),
+    targetProducts: [],
+  };
+  const event = buildBaselineInventoryEvent(snapshot, {
+    label: "酷澎 M4 Mac mini",
+    purchaseUrl: COUPANG_SEARCH_URL,
+    formatSummary: formatCoupangSummary,
+  });
+
+  assert.equal(event, null);
 });
 
 test("answers check commands with live Apple data", async () => {
