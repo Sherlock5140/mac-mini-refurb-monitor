@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   APPLE_REFURB_URL,
+  CHATGPT_PROMO_MONITOR_CRON,
+  CHATGPT_PROMO_REPO_URL,
   COUPANG_SEARCH_URL,
   COUPANG_SONY_SEARCH_URL,
   COSTCO_DESKTOP_URL,
@@ -559,6 +561,10 @@ test("recognizes common Traditional Chinese text without Workers AI", async () =
   assert.deepEqual(
     deterministicNaturalLanguageIntent("查虎航最新優惠"),
     { action: "tigerair" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查 ChatGPT Business 優惠碼更新"),
+    { action: "gptpromo" },
   );
 });
 
@@ -1245,10 +1251,34 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /酷澎 排程：等待第一次執行/);
   assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
   assert.match(reply, /台灣虎航 排程：等待第一次執行/);
-  assert.match(reply, /商品每 5 分鐘、虎航公告每 30 分鐘/);
+  assert.match(reply, /ChatGPT Business 優惠情報 排程：等待第一次執行/);
+  assert.match(reply, /商品每 5 分鐘；虎航與公開優惠情報每 30 分鐘/);
   assert.match(reply, /虎航開賣提醒：每 5 分鐘/);
   assert.equal(TIGERAIR_MONITOR_CRON, "4,34 * * * *");
+  assert.equal(CHATGPT_PROMO_MONITOR_CRON, "14,44 * * * *");
   assert.doesNotMatch(reply, /GitHub Actions/);
+});
+
+test("queries public ChatGPT Business promotion update metadata", async () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const fakeFetch = async () =>
+    Response.json([
+      {
+        sha,
+        html_url: `${CHATGPT_PROMO_REPO_URL}/commit/${sha}`,
+        commit: {
+          message: "Refresh public metadata",
+          committer: { date: "2026-07-29T01:00:00Z" },
+        },
+      },
+    ]);
+
+  const reply = await replyForCommand("/gptpromo", fakeFetch);
+
+  assert.match(reply, /ChatGPT Business 公開優惠情報/);
+  assert.match(reply, /社群情報，未經 OpenAI 官方驗證/);
+  assert.match(reply, new RegExp(`${sha}$`, "m"));
+  assert.match(reply, /不自動猜碼、試碼、切換地區、登入或付款/);
 });
 
 test("lists the active notification test command", async () => {
@@ -1260,6 +1290,7 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
   assert.match(reply, /\/tigerair－立即查詢台灣虎航官方優惠/);
+  assert.match(reply, /\/gptpromo－查詢 ChatGPT Business 公開優惠情報/);
   assert.match(reply, /\/errors－查看目前異常與自動修復狀態/);
   assert.match(reply, /\/retry 目標－立即重試一次指定監控/);
   assert.match(reply, /\/sources－顯示已驗證來源與擷取方式/);

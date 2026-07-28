@@ -34,6 +34,15 @@ import {
   tigerairSnapshot,
   withTigerairSaleSchedule,
 } from "./tigerair-promotions.js";
+import {
+  CHATGPT_PROMO_COMMITS_API_URL,
+  CHATGPT_PROMO_REPO_URL,
+  applyChatgptPromoUpdates,
+  assertChatgptPromoCommitsApiUrl,
+  buildChatgptPromoBaselineEvent,
+  formatChatgptPromoSummary,
+  parseChatgptPromoCommit,
+} from "./chatgpt-promotions.js";
 
 const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
@@ -55,6 +64,8 @@ const SONY_MONITOR_CRON =
   "2,7,12,17,22,27,32,37,42,47,52,57 * * * *";
 const TIGERAIR_MONITOR_CRON =
   "4,34 * * * *";
+const CHATGPT_PROMO_MONITOR_CRON =
+  "14,44 * * * *";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const AI_DIAGNOSTIC_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const AI_CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -85,6 +96,7 @@ const AI_CHAT_ACTIONS = new Set([
   "recover",
   "sources",
   "tigerair",
+  "gptpromo",
 ]);
 const AI_DIAGNOSTIC_STATES = new Set([
   "blocked",
@@ -118,6 +130,10 @@ const SOURCE_TABLES = {
     state: "tigerair_monitor_state",
     runs: "tigerair_monitor_runs",
   },
+  chatgptPromo: {
+    state: "chatgpt_promo_monitor_state",
+    runs: "chatgpt_promo_monitor_runs",
+  },
 };
 const MONITOR_TARGET_IDS = {
   apple: "apple-mac-mini",
@@ -126,6 +142,7 @@ const MONITOR_TARGET_IDS = {
   coupang: "coupang-mac-mini",
   sony: "coupang-sony-xm6",
   tigerair: "tigerair-promotions",
+  chatgptPromo: "chatgpt-business-promo-updates",
 };
 
 const DEVICE_FAMILIES = [
@@ -194,6 +211,12 @@ function aiResponseText(result) {
 
 function targetNameFromNaturalLanguage(text) {
   const normalized = normalizeText(text).toLowerCase();
+  if (
+    /chatgpt.*(?:business|team).*(?:promo|優惠碼|折扣碼)|(?:promo|優惠碼|折扣碼).*chatgpt/i
+      .test(normalized)
+  ) {
+    return "ChatGPT Business 優惠情報";
+  }
   if (/sony|wh[\s-]?1000xm6|耳機/i.test(normalized)) return "Sony";
   if (/tigerair|虎航|台虎/i.test(normalized)) return "虎航";
   if (/costco|好市多/i.test(normalized)) return "Costco";
@@ -266,6 +289,12 @@ export function deterministicNaturalLanguageIntent(text) {
     return { action: "status" };
   }
   if (
+    /chatgpt/i.test(lowered) &&
+    /business|team|promo|優惠碼|折扣碼|促銷碼|優惠|折扣/i.test(normalized)
+  ) {
+    return { action: "gptpromo" };
+  }
+  if (
     /tigerair|虎航|台虎/i.test(lowered) &&
     /優惠|促銷|特惠|機票|票價|開賣|最新|查|找/i.test(normalized)
   ) {
@@ -305,7 +334,7 @@ export async function interpretNaturalLanguage(text, ai) {
         role: "system",
         content: [
           "你是私人商品與優惠監控 Telegram 助手，使用繁體中文簡短回答。",
-          "將使用者意圖分類成 check、costco、pchome、coupang、sony、tigerair、",
+          "將使用者意圖分類成 check、costco、pchome、coupang、sony、tigerair、gptpromo、",
           "buy、status、help 或 chat。需要即時商品、價格或狀態時必須",
           "選擇對應工具，禁止自行猜測。管理意圖使用 targets、pause、",
           "resume、remove、archive、trash、restore、add、errors、diagnose、",
@@ -1250,6 +1279,7 @@ function helpMessage() {
     "/coupang－立即查詢酷澎庫存、價格與購買連結",
     "/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格",
     "/tigerair－立即查詢台灣虎航官方優惠",
+    "/gptpromo－查詢 ChatGPT Business 公開優惠情報",
     "/buy－列出符合條件的商品與購買連結",
     "/status－確認所有商品與購物站的排程狀態",
     "/targets－列出目前監控目標",
@@ -1751,6 +1781,50 @@ async function fetchTigerairPromotions(
   );
 }
 
+async function fetchChatgptPromoUpdates(fetchImpl = fetch) {
+  assertVerifiedSourceUrl(
+    "chatgptPromo",
+    CHATGPT_PROMO_REPO_URL,
+  );
+  assertChatgptPromoCommitsApiUrl(
+    CHATGPT_PROMO_COMMITS_API_URL,
+  );
+  const response = await fetchImpl(
+    CHATGPT_PROMO_COMMITS_API_URL,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent":
+          "personal-public-update-monitor/1.0",
+      },
+      cf: {
+        cacheEverything: true,
+        cacheTtl: 60,
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `GitHub 公開優惠情報 HTTP ${response.status}`,
+    );
+  }
+  assertChatgptPromoCommitsApiUrl(
+    response.url || CHATGPT_PROMO_COMMITS_API_URL,
+  );
+  const text = await response.text();
+  if (text.length > 250_000) {
+    throw new Error("GitHub 公開優惠情報回應過大");
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error("GitHub 公開優惠情報 JSON 格式錯誤");
+  }
+  return parseChatgptPromoCommit(payload);
+}
+
 function scheduleStatusLine(label, monitor) {
   if (monitor?.enabled === false) {
     return `${label} 排程：已暫停`;
@@ -1781,6 +1855,7 @@ function formatMonitorDiagnostics(status, targetName = "") {
     ["酷澎 Mac mini", status?.coupang],
     ["酷澎 Sony", status?.sony],
     ["台灣虎航優惠", status?.tigerair],
+    ["ChatGPT Business 優惠情報", status?.chatgptPromo],
   ].filter(([label]) =>
     !targetName ||
     normalizeText(label).toLowerCase().includes(
@@ -1876,6 +1951,10 @@ function findMonitorTarget(targets, query) {
     tigerair: "tigerair-promotions",
     虎航: "tigerair-promotions",
     台虎: "tigerair-promotions",
+    gptpromo: "chatgpt-business-promo-updates",
+    chatgpt: "chatgpt-business-promo-updates",
+    "chatgpt-business": "chatgpt-business-promo-updates",
+    優惠碼: "chatgpt-business-promo-updates",
   };
   const aliasId = aliases[key];
   const exact = targets.find((target) =>
@@ -2332,7 +2411,12 @@ export async function replyForCommand(
       "",
       scheduleStatusLine("台灣虎航", monitor?.tigerair),
       "",
-      "自動監控：商品每 5 分鐘、虎航公告每 30 分鐘。",
+      scheduleStatusLine(
+        "ChatGPT Business 優惠情報",
+        monitor?.chatgptPromo,
+      ),
+      "",
+      "自動監控：商品每 5 分鐘；虎航與公開優惠情報每 30 分鐘。",
       "虎航開賣提醒：每 5 分鐘檢查已保存的開賣時間。",
       ...(ai?.run
         ? ["Workers AI：已啟用，僅在解析異常時輔助判讀。"]
@@ -2376,6 +2460,12 @@ export async function replyForCommand(
         ai,
         state.products,
       ),
+      taipeiTime(),
+    );
+  }
+  if (command === "/gptpromo") {
+    return formatChatgptPromoSummary(
+      await fetchChatgptPromoUpdates(fetchImpl),
       taipeiTime(),
     );
   }
@@ -2444,6 +2534,7 @@ async function replyForNaturalLanguageIntent(intent, env) {
     coupang: "/coupang",
     sony: "/sony",
     tigerair: "/tigerair",
+    gptpromo: "/gptpromo",
     buy: "/buy",
     status: "/status",
     help: "/help",
@@ -2814,6 +2905,7 @@ async function monitorStatus(env) {
     coupang,
     sony,
     tigerair,
+    chatgptPromo,
     targets,
   ] = await Promise.all([
     loadMonitorState(env, "apple"),
@@ -2822,6 +2914,7 @@ async function monitorStatus(env) {
     loadMonitorState(env, "coupang"),
     loadMonitorState(env, "sony"),
     loadMonitorState(env, "tigerair"),
+    loadMonitorState(env, "chatgptPromo"),
     loadMonitorTargets(env.MONITOR_DB),
   ]);
   const enabledById = new Map(
@@ -2838,6 +2931,7 @@ async function monitorStatus(env) {
     coupang: withEnabled("coupang", coupang),
     sony: withEnabled("sony", sony),
     tigerair: withEnabled("tigerair", tigerair),
+    chatgptPromo: withEnabled("chatgptPromo", chatgptPromo),
   };
 }
 
@@ -3098,6 +3192,103 @@ async function runTigerairMonitor(env, { force = false } = {}) {
     attachVerifiedSource(result.events, {
       source,
       sourceUrl: TIGERAIR_HOME_URL,
+    });
+    await sendMonitorEvents(env, result.events);
+    await persistMonitorResult(env, result.state, {
+      status: "error",
+      eventCount: result.events.length,
+      errorMessage: message,
+      source,
+    });
+    return {
+      ok: false,
+      error: message,
+      errorKind: classifyMonitorError(error),
+      eventCount: result.events.length,
+    };
+  }
+}
+
+async function runChatgptPromoMonitor(
+  env,
+  { force = false } = {},
+) {
+  const source = "chatgptPromo";
+  const original = await loadMonitorState(env, source);
+  const previousErrors = original.consecutiveErrors;
+  const nowIso = new Date().toISOString();
+  const circuit = circuitStatus(original, new Date(nowIso));
+  if (!force && circuit.open) {
+    return {
+      ok: true,
+      skipped: true,
+      circuitOpen: true,
+      retryAt: circuit.retryAt,
+      eventCount: 0,
+    };
+  }
+
+  try {
+    const snapshot = await runWithRetry(
+      () => fetchChatgptPromoUpdates(fetch),
+      { maxAttempts: 2 },
+    );
+    const result = applyChatgptPromoUpdates(
+      original,
+      snapshot.targetProducts,
+      nowIso,
+    );
+    const events = [...result.events];
+    if (!original.initialized) {
+      const baseline =
+        buildChatgptPromoBaselineEvent(snapshot);
+      if (baseline) events.push(baseline);
+    }
+    const recovered = recoveryEvent(previousErrors, {
+      label: "ChatGPT Business 優惠情報",
+      source: "GitHub 公開版本紀錄",
+      minimumErrorCount: 3,
+    });
+    if (recovered) events.unshift(recovered);
+
+    attachVerifiedSource(events, {
+      source,
+      sourceUrl: CHATGPT_PROMO_REPO_URL,
+    });
+    await sendMonitorEvents(env, events);
+    result.state.lastRunAt = nowIso;
+    result.state.lastSuccessAt = nowIso;
+    await persistMonitorResult(env, result.state, {
+      status: "success",
+      snapshot,
+      eventCount: events.length,
+      source,
+    });
+    console.log(
+      `ChatGPT Business 優惠情報監控成功：` +
+      `版本 ${snapshot.targetProducts.length}，事件 ${events.length}`,
+    );
+    return {
+      ok: true,
+      snapshot,
+      eventCount: events.length,
+    };
+  } catch (error) {
+    if (error instanceof NotificationError) throw error;
+    const message =
+      error instanceof Error ? error.message : "未知監控錯誤";
+    const result = applyMonitorError(
+      original,
+      message,
+      nowIso,
+      {
+        label: "ChatGPT Business 優惠情報",
+        notifyAt: [3, 6],
+      },
+    );
+    attachVerifiedSource(result.events, {
+      source,
+      sourceUrl: CHATGPT_PROMO_REPO_URL,
     });
     await sendMonitorEvents(env, result.events);
     await persistMonitorResult(env, result.state, {
@@ -3423,6 +3614,18 @@ export async function runTigerairScheduledMonitor(env) {
   return runTigerairMonitor(env);
 }
 
+export async function runChatgptPromoScheduledMonitor(env) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB);
+  const target = targets.find(
+    (item) =>
+      item.id === MONITOR_TARGET_IDS.chatgptPromo,
+  );
+  if (!target?.enabled) {
+    return { ok: true, skipped: true, eventCount: 0 };
+  }
+  return runChatgptPromoMonitor(env);
+}
+
 export async function runTigerairSaleOpenReminders(env) {
   const targets = await loadMonitorTargets(env.MONITOR_DB);
   const target = targets.find(
@@ -3470,6 +3673,12 @@ async function runMonitorNow(env, argument) {
     result = await runGenericTargetMonitor(env, target, { force: true });
   } else if (target.id === MONITOR_TARGET_IDS.tigerair) {
     result = await runTigerairMonitor(env, { force: true });
+  } else if (
+    target.id === MONITOR_TARGET_IDS.chatgptPromo
+  ) {
+    result = await runChatgptPromoMonitor(env, {
+      force: true,
+    });
   } else if (target.id === MONITOR_TARGET_IDS.sony) {
     result = await runSourceMonitor(env, {
       source: "sony",
@@ -3569,6 +3778,7 @@ async function handleTelegramUpdate(update, env) {
       "/coupang": COUPANG_SEARCH_URL,
       "/sony": COUPANG_SONY_SEARCH_URL,
       "/tigerair": TIGERAIR_HOME_URL,
+      "/gptpromo": CHATGPT_PROMO_REPO_URL,
     }[command] ?? APPLE_REFURB_URL;
     reply = [
       "⚠️ 即時查詢暫時失敗",
@@ -3676,6 +3886,10 @@ export default {
       task = runSonyScheduledMonitor(env);
     } else if (controller.cron === TIGERAIR_MONITOR_CRON) {
       task = runTigerairScheduledMonitor(env);
+    } else if (
+      controller.cron === CHATGPT_PROMO_MONITOR_CRON
+    ) {
+      task = runChatgptPromoScheduledMonitor(env);
     } else {
       task = Promise.all([
         runScheduledMonitor(env),
@@ -3694,6 +3908,8 @@ export {
   MAC_MONITOR_CRON,
   PCHOME_SEARCH_URL,
   SONY_MONITOR_CRON,
+  CHATGPT_PROMO_MONITOR_CRON,
+  CHATGPT_PROMO_REPO_URL,
   TIGERAIR_HOME_URL,
   TIGERAIR_MONITOR_CRON,
 };

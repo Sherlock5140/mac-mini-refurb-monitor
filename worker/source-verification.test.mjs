@@ -29,6 +29,13 @@ test("accepts exact registered official hosts", () => {
     ).hostname,
     "www.tigerairtw.com",
   );
+  assert.equal(
+    assertVerifiedSourceUrl(
+      "chatgptPromo",
+      "https://github.com/JUk1-GH/gpt-promo-scanner",
+    ).hostname,
+    "github.com",
+  );
 });
 
 test("rejects lookalike, insecure, and unregistered sources", () => {
@@ -50,6 +57,13 @@ test("rejects lookalike, insecure, and unregistered sources", () => {
     () => assertVerifiedSourceUrl(
       "tigerair",
       "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg",
+    ),
+    /頁面指紋不符/,
+  );
+  assert.throws(
+    () => assertVerifiedSourceUrl(
+      "chatgptPromo",
+      "https://github.com/JUk1-GH/gpt-promo-scanner-fake",
     ),
     /頁面指紋不符/,
   );

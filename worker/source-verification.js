@@ -73,6 +73,15 @@ const SOURCE_REGISTRY = Object.freeze({
         "/zh-tw/index";
     },
   },
+  chatgptPromo: {
+    label: "GitHub 公開專案（社群情報）",
+    allowedHosts: ["github.com"],
+    method: "GitHub 公開版本紀錄；不執行掃描器",
+    matchesUrl(url) {
+      return url.pathname.replace(/\/+$/, "").toLowerCase() ===
+        "/juk1-gh/gpt-promo-scanner";
+    },
+  },
 });
 
 export function verifiedSource(source) {
