@@ -1099,6 +1099,50 @@ test("answers Tigerair commands from verified official offers", async () => {
   assert.match(reply, /tigeresg/);
 });
 
+test("answers Tigerair commands when optional Browser Run is incomplete", async () => {
+  const fakeBrowser = {
+    quickAction: async () =>
+      Response.json({
+        success: true,
+        result: "<html><body>loading</body></html>",
+        meta: {
+          status: 200,
+          url: TIGERAIR_HOME_URL,
+        },
+      }),
+  };
+  const fakeFetch = async (url) => {
+    if (String(url).includes("/api/home-banners")) {
+      return Response.json({
+        data: {
+          homeBanners: {
+            data: [{
+              attributes: {
+                linkTo: {
+                  url: "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+                },
+              },
+            }],
+          },
+        },
+      });
+    }
+    return new Response(tigerairDetailHtml, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+  };
+
+  const reply = await replyForCommand(
+    "/tigerair",
+    fakeFetch,
+    null,
+    fakeBrowser,
+  );
+
+  assert.match(reply, /全航線優惠 TWD 1,199 起/);
+});
+
 test("retries one blocked Coupang render before parsing Sony", async () => {
   let browserCalls = 0;
   const fakeBrowser = {

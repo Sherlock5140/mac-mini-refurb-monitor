@@ -1479,9 +1479,6 @@ async function fetchTigerairPromotions(
   browser,
   fetchImpl = fetch,
 ) {
-  if (!browser?.quickAction) {
-    throw new Error("Cloudflare Browser Run 尚未設定");
-  }
   assertVerifiedSourceUrl("tigerair", TIGERAIR_HOME_URL);
   assertTigerairBannerFeedUrl(TIGERAIR_BANNERS_API_URL);
   const bannerResponse = await fetchImpl(
@@ -1513,41 +1510,46 @@ async function fetchTigerairPromotions(
     await bannerResponse.json(),
   );
 
-  const response = await browser.quickAction("content", {
-    url: TIGERAIR_HOME_URL,
-    gotoOptions: {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    },
-    waitForTimeout: 3500,
-    rejectResourceTypes: [
-      "image",
-      "media",
-      "font",
-    ],
-  });
-  if (!response.ok) {
-    throw new Error(
-      `台灣虎航 Browser Run HTTP ${response.status}`,
-    );
-  }
-  const payload = await response.json().catch(() => null);
-  assertVerifiedSourceUrl(
-    "tigerair",
-    payload?.meta?.url || TIGERAIR_HOME_URL,
-  );
-  const html =
-    typeof payload?.result === "string" ? payload.result : "";
-  if (
-    payload?.success !== true ||
-    payload?.meta?.status !== 200 ||
-    !html
-  ) {
-    throw new Error(
-      `台灣虎航首頁載入失敗（HTTP ${
-        payload?.meta?.status ?? "unknown"
-      }）`,
-    );
+  let html =
+    "<main><h2>最新活動推薦</h2><h2>最新消息</h2></main>";
+  if (browser?.quickAction) {
+    try {
+      const response = await browser.quickAction("content", {
+        url: TIGERAIR_HOME_URL,
+        gotoOptions: {
+          waitUntil: "domcontentloaded",
+          timeout: 30000,
+        },
+        waitForTimeout: 3500,
+        rejectResourceTypes: [
+          "image",
+          "media",
+          "font",
+        ],
+      });
+      const payload = response.ok
+        ? await response.json().catch(() => null)
+        : null;
+      assertVerifiedSourceUrl(
+        "tigerair",
+        payload?.meta?.url || TIGERAIR_HOME_URL,
+      );
+      const candidate =
+        typeof payload?.result === "string"
+          ? payload.result
+          : "";
+      if (
+        payload?.success === true &&
+        payload?.meta?.status === 200 &&
+        candidate.includes("最新活動推薦") &&
+        candidate.includes("最新消息")
+      ) {
+        html = candidate;
+      }
+    } catch {
+      // The official banner API remains authoritative; Browser Run
+      // only enriches the snapshot with rendered news and card offers.
+    }
   }
 
   const preview = tigerairSnapshot(html);
