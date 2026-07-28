@@ -48,6 +48,14 @@ test("accepts a public HTTPS product URL and blocks private targets", () => {
     () => validatePublicProductUrl("https://192.168.1.2/item/1"),
     /不接受/,
   );
+  assert.throws(
+    () => validatePublicProductUrl("https://8.8.8.8/item/1"),
+    /不接受/,
+  );
+  assert.throws(
+    () => validatePublicProductUrl("https://[2001:4860:4860::8888]/item/1"),
+    /不接受/,
+  );
 });
 
 test("parses one TWD JSON-LD product into a monitor snapshot", () => {
@@ -94,5 +102,27 @@ test("rejects foreign currency and ambiguous multi-product pages", () => {
       "https://shop.example.com/search",
     ),
     /多項商品/,
+  );
+  assert.throws(
+    () => parseGenericProductPage(
+      productPage({ price: 1999 }) +
+        productPage({ price: 1899 }),
+      "https://shop.example.com/products/sku-123",
+    ),
+    /多個不同 Offer/,
+  );
+  assert.throws(
+    () => parseGenericProductPage(
+      productPage({ availability: "" }),
+      "https://shop.example.com/products/sku-123",
+    ),
+    /名稱、價格、貨幣與庫存/,
+  );
+  assert.throws(
+    () => parseGenericProductPage(
+      productPage({ availability: "https://schema.org/BackOrder" }),
+      "https://shop.example.com/products/sku-123",
+    ),
+    /庫存狀態不明/,
   );
 });

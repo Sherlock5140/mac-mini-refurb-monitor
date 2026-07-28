@@ -18,6 +18,7 @@ import {
   formatPurchaseMessage,
   formatMonitorTargets,
   claimAiChatAllowance,
+  claimTelegramUpdate,
   deterministicNaturalLanguageIntent,
   interpretNaturalLanguage,
   loadMonitorTargets,
@@ -631,6 +632,29 @@ test("tracks a conservative daily AI chat allowance", async () => {
   });
   assert.equal(bindings[0][0], "2026-07-26");
   assert.equal(bindings[0][2], 40);
+});
+
+test("deduplicates repeated Telegram updates for seven days", async () => {
+  const seen = new Set();
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return { sql, values };
+        },
+      };
+    },
+    async batch(statements) {
+      const updateId = statements[0].values[0];
+      const changes = seen.has(updateId) ? 0 : 1;
+      seen.add(updateId);
+      return [{ meta: { changes } }, { meta: { changes: 0 } }];
+    },
+  };
+
+  assert.equal(await claimTelegramUpdate(db, 123), true);
+  assert.equal(await claimTelegramUpdate(db, 123), false);
+  assert.equal(await claimTelegramUpdate(db, 124), true);
 });
 
 test("natural-language chat falls back when the local free quota is exhausted", async () => {

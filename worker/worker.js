@@ -117,6 +117,21 @@ function normalizeText(value) {
     .trim();
 }
 
+function parseStoredJson(value, fallback, label) {
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(String(value ?? "")),
+    };
+  } catch {
+    console.error(`${label} JSON 資料損壞，已採安全預設值`);
+    return {
+      ok: false,
+      value: fallback,
+    };
+  }
+}
+
 function visiblePageText(html) {
   return decodeHtml(
     String(html ?? "")
@@ -1485,7 +1500,11 @@ export async function loadMonitorTargets(db, {
     label: String(row.label),
     adapterKey: String(row.adapter_key),
     sourceUrl: String(row.source_url),
-    config: JSON.parse(row.config_json || "{}"),
+    config: parseStoredJson(
+      row.config_json || "{}",
+      {},
+      `監控目標 ${row.id} 設定`,
+    ).value,
     enabled: Boolean(row.enabled),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1639,6 +1658,16 @@ async function fetchGenericProductPreview(urlValue, fetchImpl = fetch) {
     throw new Error(`商品頁 HTTP ${response.status}`);
   }
   validatePublicProductUrl(response.url || url.href);
+  const contentType = normalizeText(
+    response.headers.get("Content-Type"),
+  ).toLowerCase();
+  if (
+    contentType &&
+    !contentType.includes("text/html") &&
+    !contentType.includes("application/xhtml+xml")
+  ) {
+    throw new Error("網址不是可驗證的 HTML 商品頁");
+  }
   const contentLength = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(contentLength) && contentLength > 2_000_000) {
     throw new Error("商品頁過大，需要專用網站 adapter");
@@ -1714,7 +1743,15 @@ async function confirmMonitorTargetChange(db, confirmationCode) {
     if (new Date(addDraft.expires_at).getTime() <= Date.now()) {
       return "新增草稿已逾時，請重新貼上商品網址。";
     }
-    const payload = JSON.parse(addDraft.payload_json);
+    const parsedPayload = parseStoredJson(
+      addDraft.payload_json,
+      null,
+      `新增草稿 ${addDraft.id}`,
+    );
+    if (!parsedPayload.ok || !parsedPayload.value) {
+      return "新增草稿資料損壞，請重新貼上商品網址。";
+    }
+    const payload = parsedPayload.value;
     const now = new Date().toISOString();
     await db.batch([
       db.prepare(
@@ -2082,6 +2119,32 @@ async function telegramRequest(env, method, payload, fetchImpl = fetch) {
   return result.result;
 }
 
+export async function claimTelegramUpdate(
+  db,
+  updateId,
+  now = new Date(),
+) {
+  if (!Number.isSafeInteger(Number(updateId))) {
+    return true;
+  }
+  const nowIso = now.toISOString();
+  const expiresBefore = new Date(
+    now.getTime() - 7 * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const results = await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO telegram_updates (
+        update_id, received_at
+      ) VALUES (?, ?)`,
+    ).bind(Number(updateId), nowIso),
+    db.prepare(
+      `DELETE FROM telegram_updates
+      WHERE received_at < ?`,
+    ).bind(expiresBefore),
+  ]);
+  return Number(results?.[0]?.meta?.changes ?? 0) === 1;
+}
+
 class NotificationError extends Error {}
 
 async function sendMonitorEvents(env, events) {
@@ -2162,26 +2225,25 @@ export function buildTestNotificationEvent(
 }
 
 async function sendTestNotification(env) {
-  const [snapshot, costcoSnapshot, pchomeSnapshot, coupangSnapshot] =
+  const [snapshot, costcoSnapshot, pchomeSnapshot] =
     await Promise.all([
       fetchInventory(fetch, env.AI),
       fetchCostcoInventory(fetch, env.AI),
       fetchPchomeInventory(fetch, env.AI),
-      fetchCoupangInventory(env.BROWSER, env.AI),
     ]);
   await sendMonitorEvents(env, [
     buildTestNotificationEvent(
       snapshot,
       costcoSnapshot,
       pchomeSnapshot,
-      coupangSnapshot,
+      null,
     ),
   ]);
   return {
     snapshot,
     costcoSnapshot,
     pchomeSnapshot,
-    coupangSnapshot,
+    coupangSnapshot: null,
   };
 }
 
@@ -2211,10 +2273,15 @@ async function loadMonitorState(env, source = "apple") {
   if (!row) {
     return emptyMonitorState();
   }
+  const products = parseStoredJson(
+    row.products_json,
+    {},
+    `${source} 監控狀態`,
+  );
   return {
     version: Number(row.version),
-    initialized: Boolean(row.initialized),
-    products: JSON.parse(row.products_json),
+    initialized: Boolean(row.initialized) && products.ok,
+    products: products.value,
     consecutiveErrors: Number(row.consecutive_errors),
     lastHeartbeatDate: row.last_heartbeat_date,
     lastRunAt: row.last_run_at,
@@ -2522,10 +2589,15 @@ async function loadGenericMonitorState(env, targetId) {
     WHERE target_id = ?`,
   ).bind(targetId).first();
   if (!row) return emptyMonitorState();
+  const products = parseStoredJson(
+    row.products_json,
+    {},
+    `通用監控 ${targetId} 狀態`,
+  );
   return {
     version: Number(row.version),
-    initialized: Boolean(row.initialized),
-    products: JSON.parse(row.products_json),
+    initialized: Boolean(row.initialized) && products.ok,
+    products: products.value,
     consecutiveErrors: Number(row.consecutive_errors),
     lastHeartbeatDate: row.last_heartbeat_date,
     lastRunAt: row.last_run_at,
@@ -2680,6 +2752,25 @@ async function runGenericTargetMonitor(env, target, { force = false } = {}) {
   }
 }
 
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(Math.max(1, limit), items.length) },
+      () => worker(),
+    ),
+  );
+  return results;
+}
+
 function fixedMonitorDefinitions(env) {
   return [
     {
@@ -2722,6 +2813,7 @@ function fixedMonitorDefinitions(env) {
       formatSummary: formatCoupangSummary,
       errorNotificationCounts: [3, 6],
       recoveryNotificationMinimumErrors: 3,
+      maxAttempts: 1,
     },
   ];
 }
@@ -2743,8 +2835,10 @@ export async function runScheduledMonitor(env) {
       !target.archivedAt &&
       target.adapterKey === "generic-jsonld",
   );
-  const genericResults = await Promise.all(
-    genericTargets.map((target) => runGenericTargetMonitor(env, target)),
+  const genericResults = await mapWithConcurrency(
+    genericTargets,
+    2,
+    (target) => runGenericTargetMonitor(env, target),
   );
   return {
     ok:
@@ -2778,6 +2872,7 @@ export async function runSonyScheduledMonitor(env) {
     sendDailyHeartbeat: false,
     errorNotificationCounts: [3, 6],
     recoveryNotificationMinimumErrors: 3,
+    maxAttempts: 1,
   });
 }
 
@@ -2811,6 +2906,7 @@ async function runMonitorNow(env, argument) {
       sendDailyHeartbeat: false,
       errorNotificationCounts: [3, 6],
       recoveryNotificationMinimumErrors: 3,
+      maxAttempts: 1,
       force: true,
     });
   } else {
@@ -2847,6 +2943,13 @@ async function handleTelegramUpdate(update, env) {
     return;
   }
   if (String(message.chat.id) !== String(env.TELEGRAM_CHAT_ID)) {
+    return;
+  }
+  if (
+    env.MONITOR_DB &&
+    !await claimTelegramUpdate(env.MONITOR_DB, update?.update_id)
+  ) {
+    console.log(`略過重複 Telegram update：${update.update_id}`);
     return;
   }
 
@@ -2950,11 +3053,8 @@ export default {
               pchomeSnapshot.targetProducts.length,
           },
           coupang: {
-            totalProductCount: coupangSnapshot.totalProductCount,
-            macProductCount: coupangSnapshot.macProductCount,
-            macMiniCount: coupangSnapshot.macMiniCount,
-            targetProductCount:
-              coupangSnapshot.targetProducts.length,
+            skipped: true,
+            reason: "Use the private /coupang command separately",
           },
         });
       } catch (error) {

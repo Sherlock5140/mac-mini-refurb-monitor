@@ -40,3 +40,6 @@ jobs:
 
       - name: Run Worker tests
         run: npm test
+
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --dry-run

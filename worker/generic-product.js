@@ -38,24 +38,14 @@ export function validatePublicProductUrl(value) {
     "metadata.google.internal",
   ]);
   const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  const privateIpv4 = ipv4 && (
-    Number(ipv4[1]) === 10 ||
-    Number(ipv4[1]) === 127 ||
-    (Number(ipv4[1]) === 169 && Number(ipv4[2]) === 254) ||
-    (Number(ipv4[1]) === 172 && Number(ipv4[2]) >= 16 && Number(ipv4[2]) <= 31) ||
-    (Number(ipv4[1]) === 192 && Number(ipv4[2]) === 168)
-  );
+  const literalIp = Boolean(ipv4) || hostname.includes(":");
   if (
     blockedNames.has(hostname) ||
     hostname.endsWith(".local") ||
     hostname.endsWith(".internal") ||
-    privateIpv4 ||
-    hostname === "::1" ||
-    hostname.startsWith("fc") ||
-    hostname.startsWith("fd") ||
-    hostname.startsWith("fe80:")
+    literalIp
   ) {
-    throw new Error("不接受本機、內部網路或私有 IP 網址");
+    throw new Error("不接受本機、內部網路或 IP 位址");
   }
   return url;
 }
@@ -83,26 +73,65 @@ export function parseGenericProductPage(html, pageUrl) {
       const name = normalize(product.name);
       const price = Number(offer.price ?? offer.lowPrice);
       const currency = normalize(offer.priceCurrency).toUpperCase();
-      if (!name || !Number.isFinite(price) || price <= 0 || !currency) {
+      const availability = normalize(offer.availability).toLowerCase();
+      if (
+        !name ||
+        !Number.isFinite(price) ||
+        price <= 0 ||
+        !currency ||
+        !availability
+      ) {
         return [];
       }
-      return [{ product, offer, name, price, currency }];
+      return [{
+        product,
+        offer,
+        name,
+        price,
+        currency,
+        availability,
+      }];
     })
   );
   if (candidates.length === 0) {
-    throw new Error("頁面沒有可驗證的 Product JSON-LD 名稱與價格");
+    throw new Error(
+      "頁面沒有可驗證的 Product JSON-LD 名稱、價格、貨幣與庫存",
+    );
   }
   const uniqueNames = new Set(candidates.map((item) => item.name));
   if (uniqueNames.size !== 1) {
     throw new Error("頁面包含多項商品，需要專用網站 adapter");
   }
-  const candidate = candidates[0];
+  const signatures = new Map(candidates.map((item) => [
+    [
+      item.name,
+      item.price,
+      item.currency,
+      item.availability,
+      normalize(item.offer.sku ?? item.product.sku),
+      normalize(item.offer.url ?? item.product.url ?? pageUrl),
+    ].join("|"),
+    item,
+  ]));
+  if (signatures.size !== 1) {
+    throw new Error("頁面包含多個不同 Offer，需要專用網站 adapter");
+  }
+  const candidate = [...signatures.values()][0];
   if (candidate.currency !== "TWD") {
     throw new Error(`目前通用新增只支援 TWD，偵測到 ${candidate.currency}`);
   }
-  const availability = normalize(candidate.offer.availability).toLowerCase();
-  const available = !availability ||
-    !/(?:outofstock|soldout|discontinued)/i.test(availability);
+  const availableStates =
+    /(?:instock|limitedavailability|onlineonly|preorder|presale)$/i;
+  const unavailableStates =
+    /(?:outofstock|soldout|discontinued)$/i;
+  let available;
+  if (availableStates.test(candidate.availability)) {
+    available = true;
+  } else if (unavailableStates.test(candidate.availability)) {
+    available = false;
+  } else {
+    throw new Error("Product JSON-LD 庫存狀態不明，需要專用網站 adapter");
+  }
   const stableId = normalize(
     candidate.offer.sku ??
     candidate.product.sku ??
