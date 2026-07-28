@@ -22,6 +22,13 @@ test("accepts exact registered official hosts", () => {
     ).hostname,
     "www.costco.com.tw",
   );
+  assert.equal(
+    assertVerifiedSourceUrl(
+      "tigerair",
+      "https://www.tigerairtw.com/zh-TW/index",
+    ).hostname,
+    "www.tigerairtw.com",
+  );
 });
 
 test("rejects lookalike, insecure, and unregistered sources", () => {
@@ -40,8 +47,11 @@ test("rejects lookalike, insecure, and unregistered sources", () => {
     /來源不符/,
   );
   assert.throws(
-    () => assertVerifiedSourceUrl("tigerair", "https://tigerairtw.com"),
-    /未註冊/,
+    () => assertVerifiedSourceUrl(
+      "tigerair",
+      "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg",
+    ),
+    /頁面指紋不符/,
   );
 });
 

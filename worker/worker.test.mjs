@@ -7,6 +7,7 @@ import {
   COUPANG_SONY_SEARCH_URL,
   COSTCO_DESKTOP_URL,
   PCHOME_SEARCH_URL,
+  TIGERAIR_HOME_URL,
   buildBaselineInventoryEvent,
   buildTestNotificationEvent,
   default as worker,
@@ -415,6 +416,25 @@ const coupangSonyHtml = [
   }),
 ].join("");
 
+const tigerairHomepageHtml = `
+  <main>
+    <a class="q-carousel__slide"
+      href="https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/"></a>
+    <h2>最新活動推薦</h2>
+    <a href="https://booking.tigerairtw.com/zh-TW/portal/credit-card/test">
+      全航線購票優惠最優 95 折
+    </a>
+    <h2>最新消息</h2>
+  </main>
+`;
+const tigerairDetailHtml = `
+  <html><head>
+    <title>世界老虎日！台虎全航線優惠 TWD 1,199 起</title>
+    <meta name="description"
+      content="7/29 購買台灣虎航機票，一起守護老虎">
+  </head></html>
+`;
+
 test("parses broad Mac counts while filtering target Mac minis", () => {
   const snapshot = parseAppleInventory(sampleHtml);
 
@@ -532,6 +552,10 @@ test("recognizes common Traditional Chinese text without Workers AI", async () =
   assert.deepEqual(
     deterministicNaturalLanguageIntent("查看監控資料來源"),
     { action: "sources" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查虎航最新優惠"),
+    { action: "tigerair" },
   );
 });
 
@@ -1029,6 +1053,36 @@ test("answers Sony commands through Cloudflare Browser Run", async () => {
   assert.match(reply, /NT\$10,791/);
 });
 
+test("answers Tigerair commands from verified official offers", async () => {
+  const fakeBrowser = {
+    quickAction: async () =>
+      Response.json({
+        success: true,
+        result: tigerairHomepageHtml,
+        meta: {
+          status: 200,
+          url: TIGERAIR_HOME_URL,
+        },
+      }),
+  };
+  const fakeFetch = async () =>
+    new Response(tigerairDetailHtml, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+
+  const reply = await replyForCommand(
+    "/tigerair",
+    fakeFetch,
+    null,
+    fakeBrowser,
+  );
+
+  assert.match(reply, /台灣虎航官方優惠/);
+  assert.match(reply, /全航線優惠 TWD 1,199 起/);
+  assert.match(reply, /tigeresg/);
+});
+
 test("retries one blocked Coupang render before parsing Sony", async () => {
   let browserCalls = 0;
   const fakeBrowser = {
@@ -1102,6 +1156,7 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /Costco 排程：等待第一次執行/);
   assert.match(reply, /酷澎 排程：等待第一次執行/);
   assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
+  assert.match(reply, /台灣虎航 排程：等待第一次執行/);
   assert.match(reply, /Sony 耳機價格/);
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
@@ -1114,6 +1169,7 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/pchome－立即查詢 PChome 24h 庫存與價格/);
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
+  assert.match(reply, /\/tigerair－立即查詢台灣虎航官方優惠/);
   assert.match(reply, /\/errors－查看目前異常與自動修復狀態/);
   assert.match(reply, /\/retry 目標－立即重試一次指定監控/);
   assert.match(reply, /\/sources－顯示已驗證來源與擷取方式/);
@@ -1126,7 +1182,7 @@ test("lists only registered verified sources", async () => {
   assert.match(reply, /Costco 台灣官方網站/);
   assert.match(reply, /PChome 24h 官方網站/);
   assert.match(reply, /酷澎台灣官方網站/);
-  assert.doesNotMatch(reply, /虎航|Tigerair/i);
+  assert.match(reply, /台灣虎航官方網站/);
 });
 
 test("adds auditable provenance to fixed and custom notifications", () => {

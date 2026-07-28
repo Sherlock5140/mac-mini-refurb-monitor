@@ -64,6 +64,15 @@ const SOURCE_REGISTRY = Object.freeze({
       );
     },
   },
+  tigerair: {
+    label: "台灣虎航官方網站",
+    allowedHosts: ["www.tigerairtw.com"],
+    method: "官方首頁 Browser Run＋官方活動頁二次驗證",
+    matchesUrl(url) {
+      return url.pathname.replace(/\/+$/, "").toLowerCase() ===
+        "/zh-tw/index";
+    },
+  },
 });
 
 export function verifiedSource(source) {
