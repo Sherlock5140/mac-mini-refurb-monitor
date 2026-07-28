@@ -171,6 +171,39 @@ function promotion({
   return item;
 }
 
+export function isTigerairFarePromotion(item) {
+  const evidence = normalizeText(
+    `${item?.name ?? ""} ${item?.description ?? ""}`,
+  );
+  if (
+    !evidence ||
+    EXCLUDED_TERMS.test(evidence) ||
+    !PROMOTION_TERMS.test(evidence)
+  ) {
+    return false;
+  }
+  try {
+    const url = assertTigerairOfferUrl(item?.url);
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname.toLowerCase();
+    return (
+      (
+        host === "www.tigerairtw.com" &&
+        (
+          path.startsWith("/zh-tw/news/") ||
+          path.startsWith("/zh-tw/events/")
+        )
+      ) ||
+      (
+        host === "static.tigerairtw.com" &&
+        path.startsWith("/www/events/")
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function parseTigerairHomepage(html) {
   const source = String(html ?? "");
   if (
@@ -224,11 +257,12 @@ export function parseTigerairHomepage(html) {
     ) {
       continue;
     }
-    addPromotion(promotion({
+    const item = promotion({
       name: row.text,
       url: url.href,
       kind: "official-news",
-    }));
+    });
+    if (isTigerairFarePromotion(item)) addPromotion(item);
   }
 
   return {
@@ -295,13 +329,14 @@ export function parseTigerairPromotionDetail(html, pageUrl) {
   ) {
     return null;
   }
-  return promotion({
+  const item = promotion({
     name: title,
     description,
     url: url.href,
     kind: "official-event",
     imageUrl,
   });
+  return isTigerairFarePromotion(item) ? item : null;
 }
 
 export function tigerairSnapshot(homeHtml, detailPages = []) {
@@ -363,6 +398,7 @@ export function applyTigerairPromotions(
   const current = new Set();
 
   for (const item of currentPromotions) {
+    if (!isTigerairFarePromotion(item)) continue;
     current.add(item.sku);
     const stored = updated.products[item.sku];
     if (!stored) {
@@ -654,25 +690,30 @@ export function applyTigerairSaleOpenReminders(
         item &&
         item.present !== false &&
         item.name &&
-        item.url
+        item.url &&
+        isTigerairFarePromotion(item)
       )
       .slice(0, 3);
-    if (currentPromotions.length) {
-      events.push({
-        kind: "backend_test",
-        title: "🐯 虎航後端即時資料",
-        message: [
-          "Cloudflare 後端主動推送測試",
-          "",
+    events.push({
+      kind: "backend_test",
+      title: "🐯 虎航後端即時資料",
+      message: [
+        "Cloudflare 後端主動推送測試",
+        "",
+        ...(currentPromotions.length
+          ? [
           ...currentPromotions.flatMap((item, index) => [
             ...(index ? [""] : []),
             formatTigerairPromotionMessage(item),
           ]),
-        ].join("\n"),
-        url: currentPromotions[0].url,
-        disablePreview: false,
-      });
-    }
+          ]
+          : [
+              "目前沒有辨識到符合條件的航線票價優惠。",
+            ]),
+      ].join("\n"),
+      url: currentPromotions[0]?.url ?? TIGERAIR_HOME_URL,
+      disablePreview: false,
+    });
   }
   const now = Date.parse(nowIso);
   if (Number.isNaN(now)) {

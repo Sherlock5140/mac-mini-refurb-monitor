@@ -10,6 +10,7 @@ import {
   formatTigerairPromotionMessage,
   formatTigerairTaipeiTime,
   isPriorityTigerairRoute,
+  isTigerairFarePromotion,
   parseTigerairBannerFeed,
   parseTigerairHomepage,
   parseTigerairPromotionDetail,
@@ -274,6 +275,22 @@ test("consumes one backend Tigerair test request exactly once", () => {
   item.present = true;
   const state = emptyMonitorState();
   state.initialized = true;
+  state.products.card = {
+    sku: "https://booking.tigerairtw.com/zh-tw/portal/cobrand/rakuten",
+    name: "全新升級－樂虎卡",
+    description: "持卡平日購票最高 85 折起",
+    url: "https://booking.tigerairtw.com/zh-TW/portal/cobrand/Rakuten",
+    kind: "official-offer",
+    present: true,
+  };
+  state.products.bank = {
+    sku: "https://booking.tigerairtw.com/zh-tw/portal/credit-card/test",
+    name: "台新銀行專屬限定優惠",
+    description: "刷信用卡享全航線最高 95 折",
+    url: "https://booking.tigerairtw.com/zh-TW/portal/credit-card/test",
+    kind: "official-offer",
+    present: true,
+  };
   state.products[item.sku] = item;
   state.products.__backend_test__ = {
     requestedAt: "2026-07-28T14:20:00.000Z",
@@ -292,8 +309,40 @@ test("consumes one backend Tigerair test request exactly once", () => {
   assert.equal(first.events[0].kind, "backend_test");
   assert.match(first.events[0].title, /虎航後端即時資料/);
   assert.match(first.events[0].message, /票價／航線：/);
+  assert.doesNotMatch(
+    first.events[0].message,
+    /樂虎卡|台新銀行|信用卡|85 折|95 折/,
+  );
+  assert.equal(first.events[0].url, item.url);
   assert.equal(first.state.products.__backend_test__, undefined);
   assert.equal(repeated.events.length, 0);
+});
+
+test("rejects stale card offers from every Tigerair notification path", () => {
+  const fare = parseTigerairPromotionDetail(
+    currentPromotionHtml,
+    "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+  );
+  const card = {
+    sku: "https://booking.tigerairtw.com/zh-tw/portal/cobrand/rakuten",
+    name: "樂虎卡全航線購票最高 85 折起",
+    description: "持卡享優惠",
+    url: "https://booking.tigerairtw.com/zh-TW/portal/cobrand/Rakuten",
+    kind: "official-offer",
+    fingerprint: "card",
+  };
+  const state = emptyMonitorState();
+  state.initialized = true;
+  const result = applyTigerairPromotions(
+    state,
+    [card, fare],
+    "2026-07-28T14:30:00.000Z",
+  );
+
+  assert.equal(isTigerairFarePromotion(card), false);
+  assert.equal(isTigerairFarePromotion(fare), true);
+  assert.equal(result.events.length, 1);
+  assert.equal(result.events[0].url, fare.url);
 });
 
 test("builds a quiet baseline then emits only new or changed offers", () => {
