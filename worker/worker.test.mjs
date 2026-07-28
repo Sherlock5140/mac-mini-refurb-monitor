@@ -18,6 +18,7 @@ import {
   formatPurchaseMessage,
   formatMonitorTargets,
   claimAiChatAllowance,
+  deterministicNaturalLanguageIntent,
   interpretNaturalLanguage,
   loadMonitorTargets,
   manageMonitorTargets,
@@ -451,6 +452,40 @@ test("routes natural language through the GLM chat model", async () => {
     action: "sony",
     reply: "",
   });
+});
+
+test("recognizes common Traditional Chinese text without Workers AI", async () => {
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查 Costco Mac mini"),
+    { action: "costco" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("幫我查 Sony 現在多少錢"),
+    { action: "sony" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查看所有監控"),
+    { action: "targets" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("暫停 Sony 耳機監控"),
+    { action: "pause", target: "Sony" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("恢復好市多追蹤"),
+    { action: "resume", target: "Costco" },
+  );
+});
+
+test("deterministic target listing works even when Workers AI is unavailable", async () => {
+  const db = managementDbFixture();
+  const reply = await replyForNaturalLanguage(
+    "查看所有監控",
+    { MONITOR_DB: db },
+  );
+
+  assert.match(reply, /Apple M4 Mac mini/);
+  assert.match(reply, /酷澎 Sony WH-1000XM6/);
 });
 
 test("routes natural-language target management without inventing URLs", async () => {

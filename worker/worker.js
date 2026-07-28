@@ -128,6 +128,63 @@ function aiResponseText(result) {
   return typeof content === "string" ? content : "";
 }
 
+function targetNameFromNaturalLanguage(text) {
+  const normalized = normalizeText(text).toLowerCase();
+  if (/sony|wh[\s-]?1000xm6|耳機/i.test(normalized)) return "Sony";
+  if (/costco|好市多/i.test(normalized)) return "Costco";
+  if (/pchome|pc\s*home/i.test(normalized)) return "PChome";
+  if (/apple|蘋果/i.test(normalized)) return "Apple";
+  if (/coupang|酷澎/i.test(normalized)) return "酷澎";
+  return "";
+}
+
+export function deterministicNaturalLanguageIntent(text) {
+  const normalized = normalizeText(text);
+  const lowered = normalized.toLowerCase();
+  const target = targetNameFromNaturalLanguage(normalized);
+
+  if (/(?:列出|查看|顯示|有哪些|目前).*(?:監控|追蹤)(?:目標|項目|商品|清單|列表)?|^(?:監控|追蹤).*(?:清單|列表)$/i.test(normalized)) {
+    return { action: "targets" };
+  }
+  if (/(?:暫停|停止|停用)/i.test(normalized)) {
+    return target
+      ? { action: "pause", target }
+      : { action: "targets" };
+  }
+  if (/(?:恢復|重新啟用|繼續監控|繼續追蹤)/i.test(normalized)) {
+    return target
+      ? { action: "resume", target }
+      : { action: "targets" };
+  }
+  if (/(?:移除|刪除|取消監控|取消追蹤)/i.test(normalized)) {
+    return target
+      ? { action: "remove", target }
+      : { action: "targets" };
+  }
+  if (/(?:系統|排程|監控).*(?:狀態|正常|運作)|(?:狀態|正常).*(?:系統|排程|監控)/i.test(normalized)) {
+    return { action: "status" };
+  }
+  if (/sony|wh[\s-]?1000xm6|耳機/i.test(lowered)) {
+    return { action: "sony" };
+  }
+  if (/costco|好市多/i.test(lowered)) {
+    return { action: "costco" };
+  }
+  if (/pchome|pc\s*home/i.test(lowered)) {
+    return { action: "pchome" };
+  }
+  if (/coupang|酷澎/i.test(lowered)) {
+    return { action: "coupang" };
+  }
+  if (/(?:購買|下單|商品).*(?:連結|網址)|(?:連結|網址).*(?:購買|下單|商品)/i.test(normalized)) {
+    return { action: "buy" };
+  }
+  if (/apple|蘋果|整修|mac\s*mini/i.test(lowered) && /查|找|價格|庫存|有貨|商品/i.test(normalized)) {
+    return { action: "check" };
+  }
+  return null;
+}
+
 export async function interpretNaturalLanguage(text, ai) {
   if (!ai?.run) {
     return {
@@ -1549,7 +1606,14 @@ export async function replyForCommand(
 }
 
 export async function replyForNaturalLanguage(text, env) {
-  if (!env.AI?.run || !env.MONITOR_DB) {
+  if (!env.MONITOR_DB) {
+    return helpMessage();
+  }
+  const deterministicIntent = deterministicNaturalLanguageIntent(text);
+  if (deterministicIntent) {
+    return replyForNaturalLanguageIntent(deterministicIntent, env);
+  }
+  if (!env.AI?.run) {
     return helpMessage();
   }
   const allowance = await claimAiChatAllowance(env.MONITOR_DB);
@@ -1561,6 +1625,10 @@ export async function replyForNaturalLanguage(text, env) {
     ].join("\n");
   }
   const intent = await interpretNaturalLanguage(text, env.AI);
+  return replyForNaturalLanguageIntent(intent, env);
+}
+
+async function replyForNaturalLanguageIntent(intent, env) {
   if (["targets", "pause", "resume", "remove"].includes(intent.action)) {
     const argument = intent.target || "";
     return manageMonitorTargets(
