@@ -7,7 +7,7 @@ export const TIGERAIR_TIME_ZONE = "Asia/Taipei";
 const PROMOTION_TERMS =
   /促銷|優惠|特惠|開賣|快閃|折扣|未稅|(?:TWD|NT\$?)\s*[\d,]+\s*起|\d+(?:\.\d+)?\s*折|票價.*起|機票.*(?:起|優惠)/i;
 const EXCLUDED_TERMS =
-  /飯店|公寓|藥妝|接送|行李特工|eSIM|wifi|免稅品/i;
+  /飯店|公寓|住宿|藥妝|接送|租車|行李|eSIM|wifi|網卡|免稅|購物|保險|聯名商品|周邊|紀念品|品牌合作|信用卡|聯名卡|銀行|刷卡|卡友|持卡|Visa|Mastercard|JCB/i;
 
 function decodeHtml(value) {
   return String(value ?? "")
@@ -216,21 +216,18 @@ export function parseTigerairHomepage(html) {
     const isOfficialNews =
       host === "www.tigerairtw.com" &&
       path.startsWith("/zh-tw/news/");
-    const isOfficialBookingOffer =
-      host === "booking.tigerairtw.com" &&
-      path.startsWith("/zh-tw/portal/");
     if (
       !row.text ||
       EXCLUDED_TERMS.test(row.text) ||
       !PROMOTION_TERMS.test(row.text) ||
-      (!isOfficialNews && !isOfficialBookingOffer)
+      !isOfficialNews
     ) {
       continue;
     }
     addPromotion(promotion({
       name: row.text,
       url: url.href,
-      kind: isOfficialNews ? "official-news" : "official-offer",
+      kind: "official-news",
     }));
   }
 
@@ -338,20 +335,9 @@ function notification(kind, item) {
   return {
     kind,
     title: kind === "promotion_updated"
-      ? "🔄 台灣虎航優惠更新"
-      : "✈️ 台灣虎航最新優惠",
-    message: [
-      item.name,
-      ...(item.description ? ["", item.description] : []),
-      ...(item.saleStartAt
-        ? [
-            "",
-            `開賣時間：${formatTigerairTaipeiTime(
-              item.saleStartAt,
-            )}`,
-          ]
-        : []),
-    ].join("\n"),
+      ? "🐯 虎航優惠公告更新"
+      : "🐯 虎航新優惠公告",
+    message: formatTigerairPromotionMessage(item),
     url: item.url,
     disablePreview: false,
   };
@@ -537,6 +523,86 @@ export function formatTigerairTaipeiTime(value) {
     minute: "2-digit",
     hourCycle: "h23",
   }).format(date);
+}
+
+function taipeiDateParts(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIGERAIR_TIME_ZONE,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const valueOf = (type) =>
+    parts.find((part) => part.type === type)?.value;
+  return {
+    year: Number(valueOf("year")),
+    month: Number(valueOf("month")),
+    day: Number(valueOf("day")),
+    hour: valueOf("hour"),
+    minute: valueOf("minute"),
+  };
+}
+
+function compactDateTime(value, { dateOnly = false } = {}) {
+  const parts = taipeiDateParts(value);
+  if (!parts) return null;
+  const date = `${parts.year}/${parts.month}/${parts.day}`;
+  return dateOnly
+    ? date
+    : `${date} ${parts.hour}:${parts.minute}`;
+}
+
+function compactPeriod(startAt, endAt, { dateOnly = false } = {}) {
+  const start = compactDateTime(startAt, { dateOnly });
+  const end = compactDateTime(endAt, { dateOnly });
+  if (!start) return "以官方公告為準";
+  if (!end) return `${start} 起`;
+  if (dateOnly) return `${start}～${end}`;
+  const startParts = taipeiDateParts(startAt);
+  const endParts = taipeiDateParts(endAt);
+  const sameDate =
+    startParts &&
+    endParts &&
+    startParts.year === endParts.year &&
+    startParts.month === endParts.month &&
+    startParts.day === endParts.day;
+  return sameDate
+    ? `${start}–${endParts.hour}:${endParts.minute}`
+    : `${start}–${end}`;
+}
+
+function tigerairFareAndRoute(item) {
+  const evidence = normalizeText(
+    `${item.name ?? ""} ${item.description ?? ""}`,
+  );
+  const price = evidence.match(
+    /(?:TWD|NT\$?)\s*[\d,]+(?:\s*元)?(?:\s*起)?/i,
+  )?.[0];
+  const route = /全航線/.test(evidence)
+    ? "全航線"
+    : "活動指定航線";
+  return [price || "票價以官方公告為準", route].join("／");
+}
+
+export function formatTigerairPromotionMessage(item) {
+  return [
+    `活動：${normalizeText(item.name)}`,
+    `銷售：${compactPeriod(
+      item.saleStartAt,
+      item.saleEndAt,
+    )}`,
+    `旅遊期間：${compactPeriod(
+      item.travelStartAt,
+      item.travelEndAt,
+      { dateOnly: true },
+    )}`,
+    `票價／航線：${tigerairFareAndRoute(item)}`,
+  ].join("\n");
 }
 
 export function applyTigerairSaleOpenReminders(

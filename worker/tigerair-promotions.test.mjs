@@ -7,6 +7,7 @@ import {
   assertTigerairBannerFeedUrl,
   assertTigerairOfferUrl,
   buildTigerairBaselineEvent,
+  formatTigerairPromotionMessage,
   formatTigerairTaipeiTime,
   parseTigerairBannerFeed,
   parseTigerairHomepage,
@@ -119,12 +120,11 @@ test("extracts official fare offers and excludes unrelated partners", () => {
   const result = parseTigerairHomepage(homepageHtml);
 
   assert.equal(result.detailUrls.length, 1);
-  assert.equal(result.promotions.length, 2);
-  assert.match(result.promotions[0].name, /全航線購票優惠/);
-  assert.match(result.promotions[1].name, /冬季航班優惠/);
+  assert.equal(result.promotions.length, 1);
+  assert.match(result.promotions[0].name, /冬季航班優惠/);
   assert.doesNotMatch(
     result.promotions.map((item) => item.name).join(" "),
-    /飯店/,
+    /飯店|信用卡|95 折/,
   );
 });
 
@@ -141,12 +141,17 @@ test("verifies the latest official fare detail and rejects non-fare events", () 
     "<title>台虎直飛小松 每週各 2 班</title><meta name=\"description\" content=\"全新航線正式啟航\">",
     "https://static.tigerairtw.com/www/events/2607KMQ/",
   );
+  const creditCard = parseTigerairPromotionDetail(
+    "<title>銀行信用卡全航線機票 95 折優惠</title>",
+    "https://www.tigerairtw.com/zh-TW/EVENTS/card-sale/",
+  );
 
   assert.match(promotion.name, /1,199/);
   assert.match(promotion.description, /7\/29/);
   assert.match(promotion.imageUrl, /strapi-assets\.tigerairtw\.com/);
   assert.equal(rejected, null);
   assert.equal(routeLaunch, null);
+  assert.equal(creditCard, null);
 });
 
 test("parses a verified Taipei sale schedule and reminds exactly once", () => {
@@ -196,6 +201,24 @@ test("parses a verified Taipei sale schedule and reminds exactly once", () => {
   assert.equal(opened.events[0].kind, "sale_open");
   assert.match(opened.events[0].message, /2026\/07\/29 10:00/);
   assert.equal(repeated.events.length, 0);
+});
+
+test("formats fare notifications as the requested compact four-line notice", () => {
+  const message = formatTigerairPromotionMessage({
+    name: "冬季航班開賣第 3 波",
+    description: "日本與韓國指定航線 TWD 1,299 起",
+    saleStartAt: "2026-07-13T07:00:00.000Z",
+    saleEndAt: "2026-07-13T15:59:00.000Z",
+    travelStartAt: "2026-10-24T16:00:00.000Z",
+    travelEndAt: "2027-03-27T15:59:00.000Z",
+  });
+
+  assert.equal(message, [
+    "活動：冬季航班開賣第 3 波",
+    "銷售：2026/7/13 15:00–23:59",
+    "旅遊期間：2026/10/25～2027/3/27",
+    "票價／航線：TWD 1,299 起／活動指定航線",
+  ].join("\n"));
 });
 
 test("builds a quiet baseline then emits only new or changed offers", () => {
