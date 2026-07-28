@@ -9,15 +9,17 @@ const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
 const COSTCO_DESKTOP_URL =
   "https://www.costco.com.tw/Digital-Mobile/Laptops-Computers/Desktops-Computers/c/20101";
+const COSTCO_PRODUCTS_API_URL =
+  "https://www.costco.com.tw/rest/v2/taiwan/products/search?fields=FULL&query=%3Arelevance%3Acategory%3A20101&pageSize=100&lang=zh_TW&curr=TWD";
 const COSTCO_ORIGIN = "https://www.costco.com.tw";
 const PCHOME_SEARCH_URL =
   "https://24h.pchome.com.tw/search/?q=mac%20mini%20m4";
 const PCHOME_ORIGIN = "https://24h.pchome.com.tw";
 const COUPANG_SEARCH_URL =
-  "https://www.tw.coupang.com/srp/mac-mini?q=mac%20mini%20m4";
+  "https://www.tw.coupang.com/np/search?q=mac%20mini%20m4";
 const COUPANG_ORIGIN = "https://www.tw.coupang.com";
 const COUPANG_SONY_SEARCH_URL =
-  "https://www.tw.coupang.com/srp/wh-1000xm6?q=WH-1000XM6";
+  "https://www.tw.coupang.com/np/search?q=WH-1000XM6";
 const MAC_MONITOR_CRON = "*/5 * * * *";
 const SONY_MONITOR_CRON =
   "2,7,12,17,22,27,32,37,42,47,52,57 * * * *";
@@ -576,6 +578,74 @@ export function parseCostcoInventory(html) {
   };
 }
 
+export function parseCostcoApiInventory(value) {
+  const payload = typeof value === "string" ? JSON.parse(value) : value;
+  const sourceProducts = Array.isArray(payload?.products)
+    ? payload.products
+    : [];
+  if (sourceProducts.length === 0) {
+    throw new Error("Costco 商品 API 沒有回傳任何商品");
+  }
+
+  const products = sourceProducts.flatMap((product) => {
+    const name = normalizeText(product?.name);
+    const sku = normalizeText(product?.code);
+    const path = normalizeText(product?.url);
+    const priceTwd = Number(product?.price?.value);
+    const currency = normalizeText(product?.price?.currencyIso);
+    const stockStatus = normalizeText(
+      product?.stock?.stockLevelStatus,
+    ).toLowerCase();
+    if (
+      !name ||
+      !sku ||
+      !path ||
+      !Number.isFinite(priceTwd) ||
+      priceTwd <= 0 ||
+      currency !== "TWD"
+    ) {
+      return [];
+    }
+    return [{
+      sku,
+      name,
+      url: new URL(path, COSTCO_ORIGIN).href,
+      priceTwd,
+      available:
+        product?.purchasable === true &&
+        ["instock", "lowstock"].includes(stockStatus),
+    }];
+  });
+  if (products.length === 0) {
+    throw new Error("Costco 商品 API 缺少名稱、價格或商品編號");
+  }
+
+  const targets = new Map();
+  for (const product of products) {
+    const target = costcoTargetProduct(product);
+    if (target) {
+      targets.set(target.sku, target);
+    }
+  }
+  const macProducts = products.filter((product) =>
+    product.name.toLowerCase().includes("mac"),
+  );
+  const macMinis = products.filter((product) =>
+    product.name.toLowerCase().includes("mac mini"),
+  );
+  return {
+    totalProductCount: products.length,
+    macProductCount: macProducts.length,
+    macMiniCount: macMinis.length,
+    deviceCounts: macProducts.length
+      ? [["Mac", macProducts.length]]
+      : [],
+    targetProducts: [...targets.values()].sort((a, b) =>
+      a.sku.localeCompare(b.sku),
+    ),
+  };
+}
+
 export function parsePchomeInventory(html) {
   const starts = [
     ...html.matchAll(
@@ -1053,9 +1123,9 @@ async function fetchInventory(fetchImpl, ai = null) {
 }
 
 async function fetchCostcoInventory(fetchImpl, ai = null) {
-  const response = await fetchImpl(COSTCO_DESKTOP_URL, {
+  const response = await fetchImpl(COSTCO_PRODUCTS_API_URL, {
     headers: {
-      Accept: "text/html,application/xhtml+xml",
+      Accept: "application/json",
       "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
       "Cache-Control": "no-cache",
       "User-Agent":
@@ -1067,15 +1137,9 @@ async function fetchCostcoInventory(fetchImpl, ai = null) {
     },
   });
   if (!response.ok) {
-    throw new Error(`Costco HTTP ${response.status}`);
+    throw new Error(`Costco 商品 API HTTP ${response.status}`);
   }
-  const html = await response.text();
-  return parseWithAiDiagnostics({
-    ai,
-    source: "Costco",
-    html,
-    parser: parseCostcoInventory,
-  });
+  return parseCostcoApiInventory(await response.json());
 }
 
 async function fetchPchomeInventory(fetchImpl, ai = null) {

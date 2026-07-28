@@ -25,6 +25,7 @@ import {
   parseWithAiDiagnostics,
   parseCoupangInventory,
   parseCoupangSonyInventory,
+  parseCostcoApiInventory,
   parseCostcoInventory,
   parsePchomeInventory,
   replyForCommand,
@@ -239,6 +240,50 @@ const costcoHtml = [
     price: 39999,
   }),
 ].join("");
+
+const costcoApiPayload = {
+  products: [
+    {
+      code: "149621",
+      name: "Apple Mac mini Apple M4晶片 配備10 核心 CPU 10 核心 GPU 16GB 512GB SSD",
+      url: "/Digital-Mobile/Apple-Mac-mini/p/149621",
+      price: {
+        currencyIso: "TWD",
+        value: 31999,
+      },
+      purchasable: true,
+      stock: {
+        stockLevelStatus: "inStock",
+      },
+    },
+    {
+      code: "149999",
+      name: "Apple Mac mini Apple M4 Pro晶片 24GB 512GB SSD",
+      url: "/Digital-Mobile/Apple-Mac-mini-M4-Pro/p/149999",
+      price: {
+        currencyIso: "TWD",
+        value: 54999,
+      },
+      purchasable: true,
+      stock: {
+        stockLevelStatus: "inStock",
+      },
+    },
+    {
+      code: "149620",
+      name: "Apple Mac mini Apple M4晶片 16GB 256GB SSD",
+      url: "/Digital-Mobile/Apple-Mac-mini-256GB/p/149620",
+      price: {
+        currencyIso: "TWD",
+        value: 24999,
+      },
+      purchasable: false,
+      stock: {
+        stockLevelStatus: "outOfStock",
+      },
+    },
+  ],
+};
 
 function pchomeCard({
   name,
@@ -584,6 +629,17 @@ test("parses Costco cards and excludes M4 Pro Mac minis", () => {
   });
 });
 
+test("parses Costco official API stock and excludes unavailable or Pro models", () => {
+  const snapshot = parseCostcoApiInventory(costcoApiPayload);
+
+  assert.equal(snapshot.totalProductCount, 3);
+  assert.equal(snapshot.macMiniCount, 3);
+  assert.equal(snapshot.targetProducts.length, 1);
+  assert.equal(snapshot.targetProducts[0].sku, "COSTCO-149621");
+  assert.equal(snapshot.targetProducts[0].priceTwd, 31999);
+  assert.match(snapshot.targetProducts[0].url, /\/p\/149621$/);
+});
+
 test("formats Costco live stock and purchase links", () => {
   const summary = formatCostcoSummary(
     parseCostcoInventory(costcoHtml),
@@ -763,9 +819,8 @@ test("answers check commands with live Apple data", async () => {
 
 test("answers Costco commands with live Costco data", async () => {
   const fakeFetch = async () =>
-    new Response(costcoHtml, {
+    Response.json(costcoApiPayload, {
       status: 200,
-      headers: { "Content-Type": "text/html" },
     });
 
   const reply = await replyForCommand("/costco", fakeFetch);
