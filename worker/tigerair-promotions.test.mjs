@@ -3,13 +3,17 @@ import test from "node:test";
 
 import {
   applyTigerairPromotions,
+  applyTigerairSaleOpenReminders,
   assertTigerairBannerFeedUrl,
   assertTigerairOfferUrl,
   buildTigerairBaselineEvent,
+  formatTigerairTaipeiTime,
   parseTigerairBannerFeed,
   parseTigerairHomepage,
   parseTigerairPromotionDetail,
+  parseTigerairSaleScheduleText,
   tigerairSnapshot,
+  withTigerairSaleSchedule,
 } from "./tigerair-promotions.js";
 import { emptyMonitorState } from "./monitor-state.js";
 
@@ -35,6 +39,8 @@ const currentPromotionHtml = `
     <title>🐯世界老虎日，一起愛老虎！台虎全航線優惠 TWD 1,199 起</title>
     <meta name="description"
       content="7/29 購買台灣虎航機票，一起加入守護老虎行列">
+    <meta property="og:image"
+      content="https://strapi-assets.tigerairtw.com/TW_M_960x420_3_5c48d4429e.jpg">
   </head><body></body></html>
 `;
 
@@ -138,8 +144,58 @@ test("verifies the latest official fare detail and rejects non-fare events", () 
 
   assert.match(promotion.name, /1,199/);
   assert.match(promotion.description, /7\/29/);
+  assert.match(promotion.imageUrl, /strapi-assets\.tigerairtw\.com/);
   assert.equal(rejected, null);
   assert.equal(routeLaunch, null);
+});
+
+test("parses a verified Taipei sale schedule and reminds exactly once", () => {
+  const schedule = parseTigerairSaleScheduleText(`
+    SALE_START=2026-07-29 10:00
+    SALE_END=2026-07-30 23:59
+    TRAVEL_START=2026-07-29 00:00
+    TRAVEL_END=2026-10-24 23:59
+  `);
+  assert.deepEqual(schedule, {
+    saleStartAt: "2026-07-29T02:00:00.000Z",
+    saleEndAt: "2026-07-30T15:59:00.000Z",
+    travelStartAt: "2026-07-28T16:00:00.000Z",
+    travelEndAt: "2026-10-24T15:59:00.000Z",
+  });
+  assert.match(
+    formatTigerairTaipeiTime(schedule.saleStartAt),
+    /2026\/07\/29 10:00/,
+  );
+
+  const item = withTigerairSaleSchedule(
+    parseTigerairPromotionDetail(
+      currentPromotionHtml,
+      "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+    ),
+    schedule,
+    "2026-07-28T13:00:00.000Z",
+  );
+  const state = emptyMonitorState();
+  state.initialized = true;
+  state.products[item.sku] = item;
+  const early = applyTigerairSaleOpenReminders(
+    state,
+    "2026-07-29T01:59:59.000Z",
+  );
+  const opened = applyTigerairSaleOpenReminders(
+    early.state,
+    "2026-07-29T02:00:00.000Z",
+  );
+  const repeated = applyTigerairSaleOpenReminders(
+    opened.state,
+    "2026-07-29T02:05:00.000Z",
+  );
+
+  assert.equal(early.events.length, 0);
+  assert.equal(opened.events.length, 1);
+  assert.equal(opened.events[0].kind, "sale_open");
+  assert.match(opened.events[0].message, /2026\/07\/29 10:00/);
+  assert.equal(repeated.events.length, 0);
 });
 
 test("builds a quiet baseline then emits only new or changed offers", () => {

@@ -24,12 +24,15 @@ import {
   TIGERAIR_BANNERS_API_URL,
   TIGERAIR_HOME_URL,
   applyTigerairPromotions,
+  applyTigerairSaleOpenReminders,
   assertTigerairBannerFeedUrl,
   assertTigerairOfferUrl,
   buildTigerairBaselineEvent,
   formatTigerairSummary,
   parseTigerairBannerFeed,
+  parseTigerairSaleScheduleText,
   tigerairSnapshot,
+  withTigerairSaleSchedule,
 } from "./tigerair-promotions.js";
 
 const APPLE_REFURB_URL =
@@ -51,10 +54,12 @@ const MAC_MONITOR_CRON = "*/5 * * * *";
 const SONY_MONITOR_CRON =
   "2,7,12,17,22,27,32,37,42,47,52,57 * * * *";
 const TIGERAIR_MONITOR_CRON =
-  "4,9,14,19,24,29,34,39,44,49,54,59 * * * *";
+  "4,34 * * * *";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const AI_DIAGNOSTIC_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const AI_CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
+const TIGERAIR_VISION_MODEL =
+  "@cf/moondream/moondream3.1-9B-A2B";
 const AI_CHAT_DAILY_LIMIT = 40;
 const AI_CHAT_ACTIONS = new Set([
   "check",
@@ -1475,9 +1480,91 @@ async function fetchCoupangSonyInventory(browser, ai = null) {
   });
 }
 
+async function enrichTigerairSaleSchedules(
+  snapshot,
+  ai,
+  previousProducts = {},
+) {
+  if (!Array.isArray(snapshot?.targetProducts)) return snapshot;
+  const checkedAt = new Date().toISOString();
+  const targetProducts = [];
+
+  for (const item of snapshot.targetProducts) {
+    const stored = previousProducts?.[item.sku];
+    if (
+      stored?.saleScheduleCheckedAt &&
+      stored.imageUrl &&
+      stored.imageUrl === item.imageUrl
+    ) {
+      const schedule = stored.saleStartAt
+        ? {
+            saleStartAt: stored.saleStartAt,
+            saleEndAt: stored.saleEndAt ?? null,
+            travelStartAt: stored.travelStartAt ?? null,
+            travelEndAt: stored.travelEndAt ?? null,
+          }
+        : null;
+      const reused = withTigerairSaleSchedule(
+        item,
+        schedule,
+        stored.saleScheduleCheckedAt,
+      );
+      reused.saleScheduleSource =
+        stored.saleScheduleSource ?? reused.saleScheduleSource;
+      targetProducts.push(reused);
+      continue;
+    }
+    if (!item.imageUrl || !ai?.run) {
+      targetProducts.push(item);
+      continue;
+    }
+    try {
+      const result = await ai.run(TIGERAIR_VISION_MODEL, {
+        task: "query",
+        image: item.imageUrl,
+        question: [
+          "Read the Taiwan Tigerair promotion image exactly.",
+          "Extract only the airfare sale period and travel period.",
+          "Return exactly these four lines using Asia/Taipei local time:",
+          "SALE_START=YYYY-MM-DD HH:mm or NONE",
+          "SALE_END=YYYY-MM-DD HH:mm or NONE",
+          "TRAVEL_START=YYYY-MM-DD HH:mm or NONE",
+          "TRAVEL_END=YYYY-MM-DD HH:mm or NONE",
+          "Do not guess a missing date or time.",
+        ].join("\n"),
+        reasoning: false,
+        temperature: 0,
+        max_tokens: 180,
+        stream: false,
+      });
+      targetProducts.push(
+        withTigerairSaleSchedule(
+          item,
+          parseTigerairSaleScheduleText(result?.answer),
+          checkedAt,
+        ),
+      );
+    } catch (error) {
+      console.warn(
+        `虎航活動圖片時間辨識略過：${
+          error instanceof Error ? error.message : "未知錯誤"
+        }`,
+      );
+      targetProducts.push(item);
+    }
+  }
+
+  return {
+    ...snapshot,
+    targetProducts,
+  };
+}
+
 async function fetchTigerairPromotions(
   browser,
   fetchImpl = fetch,
+  ai = null,
+  previousProducts = {},
 ) {
   assertVerifiedSourceUrl("tigerair", TIGERAIR_HOME_URL);
   assertTigerairBannerFeedUrl(TIGERAIR_BANNERS_API_URL);
@@ -1594,7 +1681,11 @@ async function fetchTigerairPromotions(
   ) {
     throw new Error("台灣虎航最新官方活動頁載入失敗");
   }
-  return tigerairSnapshot(html, detailPages);
+  return enrichTigerairSaleSchedules(
+    tigerairSnapshot(html, detailPages),
+    ai,
+    previousProducts,
+  );
 }
 
 function scheduleStatusLine(label, monitor) {
@@ -2178,7 +2269,8 @@ export async function replyForCommand(
       "",
       scheduleStatusLine("台灣虎航", monitor?.tigerair),
       "",
-      "自動監控：Cloudflare 每 5 分鐘檢查商品與台灣虎航官方優惠。",
+      "自動監控：商品每 5 分鐘、虎航公告每 30 分鐘。",
+      "虎航開賣提醒：每 5 分鐘檢查已保存的開賣時間。",
       ...(ai?.run
         ? ["Workers AI：已啟用，僅在解析異常時輔助判讀。"]
         : []),
@@ -2211,8 +2303,16 @@ export async function replyForCommand(
     );
   }
   if (command === "/tigerair") {
+    const state = env
+      ? await loadMonitorState(env, "tigerair")
+      : { products: {} };
     return formatTigerairSummary(
-      await fetchTigerairPromotions(browser, fetchImpl),
+      await fetchTigerairPromotions(
+        browser,
+        fetchImpl,
+        ai,
+        state.products,
+      ),
       taipeiTime(),
     );
   }
@@ -2526,6 +2626,15 @@ async function loadMonitorState(env, source = "apple") {
     lastSuccessAt: row.last_success_at,
     lastError: row.last_error,
   };
+}
+
+async function persistMonitorProducts(env, state, source) {
+  const tables = sourceTables(source);
+  await env.MONITOR_DB.prepare(
+    `UPDATE ${tables.state}
+    SET products_json = ?
+    WHERE id = 1`,
+  ).bind(JSON.stringify(state.products ?? {})).run();
 }
 
 async function persistMonitorResult(
@@ -2859,6 +2968,8 @@ async function runTigerairMonitor(env, { force = false } = {}) {
         const result = await fetchTigerairPromotions(
           env.BROWSER,
           fetch,
+          env.AI,
+          original.products,
         );
         if (!Array.isArray(result.targetProducts)) {
           throw new Error("台灣虎航優惠解析格式異常");
@@ -3249,6 +3360,34 @@ export async function runTigerairScheduledMonitor(env) {
   return runTigerairMonitor(env);
 }
 
+export async function runTigerairSaleOpenReminders(env) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB);
+  const target = targets.find(
+    (item) => item.id === MONITOR_TARGET_IDS.tigerair,
+  );
+  if (!target?.enabled) {
+    return { ok: true, skipped: true, eventCount: 0 };
+  }
+  const original = await loadMonitorState(env, "tigerair");
+  const result = applyTigerairSaleOpenReminders(
+    original,
+    new Date().toISOString(),
+  );
+  if (!result.events.length) {
+    return { ok: true, eventCount: 0 };
+  }
+  attachVerifiedSource(result.events, {
+    source: "tigerair",
+    sourceUrl: TIGERAIR_HOME_URL,
+  });
+  await sendMonitorEvents(env, result.events);
+  await persistMonitorProducts(env, result.state, "tigerair");
+  console.log(
+    `台灣虎航開賣提醒：已傳送 ${result.events.length} 則`,
+  );
+  return { ok: true, eventCount: result.events.length };
+}
+
 async function runMonitorNow(env, argument) {
   const targets = await loadMonitorTargets(env.MONITOR_DB, {
     includeArchived: false,
@@ -3475,7 +3614,10 @@ export default {
     } else if (controller.cron === TIGERAIR_MONITOR_CRON) {
       task = runTigerairScheduledMonitor(env);
     } else {
-      task = runScheduledMonitor(env);
+      task = Promise.all([
+        runScheduledMonitor(env),
+        runTigerairSaleOpenReminders(env),
+      ]);
     }
     context.waitUntil(task);
   },

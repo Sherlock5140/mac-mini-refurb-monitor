@@ -2,6 +2,7 @@ export const TIGERAIR_HOME_URL =
   "https://www.tigerairtw.com/zh-TW/index";
 export const TIGERAIR_BANNERS_API_URL =
   "https://api-cms.tigerairtw.com/api/home-banners?language=zh-TW&perPage=100";
+export const TIGERAIR_TIME_ZONE = "Asia/Taipei";
 
 const PROMOTION_TERMS =
   /促銷|優惠|特惠|開賣|快閃|折扣|未稅|(?:TWD|NT\$?)\s*[\d,]+\s*起|\d+(?:\.\d+)?\s*折|票價.*起|機票.*(?:起|優惠)/i;
@@ -130,6 +131,9 @@ function offerFingerprint(offer) {
     offer.description,
     offer.url,
     offer.kind,
+    offer.imageUrl ?? "",
+    offer.saleStartAt ?? "",
+    offer.saleEndAt ?? "",
   ].join("|");
 }
 
@@ -138,8 +142,20 @@ function promotion({
   description = "",
   url,
   kind,
+  imageUrl = null,
 }) {
   const verifiedUrl = assertTigerairOfferUrl(url);
+  let verifiedImageUrl = null;
+  if (imageUrl) {
+    const candidate = new URL(imageUrl);
+    if (
+      candidate.protocol === "https:" &&
+      candidate.hostname.toLowerCase() ===
+        "strapi-assets.tigerairtw.com"
+    ) {
+      verifiedImageUrl = candidate.href;
+    }
+  }
   const item = {
     sku: offerId(verifiedUrl),
     name: normalizeText(name).slice(0, 240),
@@ -149,6 +165,7 @@ function promotion({
       : "台灣虎航官網優惠消息",
     url: verifiedUrl.href,
     kind,
+    imageUrl: verifiedImageUrl,
   };
   item.fingerprint = offerFingerprint(item);
   return item;
@@ -270,6 +287,9 @@ export function parseTigerairPromotionDetail(html, pageUrl) {
   const description =
     metaContent(html, "og:description") ||
     metaContent(html, "description");
+  const imageUrl =
+    metaContent(html, "og:image") ||
+    metaContent(html, "twitter:image");
   const evidence = `${title} ${description}`;
   if (
     !title ||
@@ -283,6 +303,7 @@ export function parseTigerairPromotionDetail(html, pageUrl) {
     description,
     url: url.href,
     kind: "official-event",
+    imageUrl,
   });
 }
 
@@ -322,6 +343,14 @@ function notification(kind, item) {
     message: [
       item.name,
       ...(item.description ? ["", item.description] : []),
+      ...(item.saleStartAt
+        ? [
+            "",
+            `開賣時間：${formatTigerairTaipeiTime(
+              item.saleStartAt,
+            )}`,
+          ]
+        : []),
     ].join("\n"),
     url: item.url,
     disablePreview: false,
@@ -354,10 +383,16 @@ export function applyTigerairPromotions(
       continue;
     }
     const changed = stored.fingerprint !== item.fingerprint;
+    const saleStartChanged =
+      String(stored.saleStartAt ?? "") !==
+      String(item.saleStartAt ?? "");
     Object.assign(stored, clone(item), {
       present: true,
       lastSeenAt: nowIso,
     });
+    if (saleStartChanged) {
+      stored.saleOpenNotifiedAt = null;
+    }
     if (changed) {
       events.push(notification("promotion_updated", item));
     }
@@ -380,6 +415,168 @@ export function applyTigerairPromotions(
       )
       .slice(200)
       .forEach(([sku]) => delete updated.products[sku]);
+  }
+  return { state: updated, events };
+}
+
+function taipeiLocalIso(dateText, timeText) {
+  const dateMatch = String(dateText).match(
+    /^(\d{4})-(\d{2})-(\d{2})$/,
+  );
+  const timeMatch = String(timeText).match(
+    /^(\d{2}):(\d{2})$/,
+  );
+  if (!dateMatch || !timeMatch) return null;
+  const [, year, month, day] = dateMatch;
+  const [, hour, minute] = timeMatch;
+  const parts = [
+    Number(year),
+    Number(month),
+    Number(day),
+    Number(hour),
+    Number(minute),
+  ];
+  if (
+    parts.some((value) => !Number.isInteger(value)) ||
+    parts[1] < 1 ||
+    parts[1] > 12 ||
+    parts[2] < 1 ||
+    parts[2] > 31 ||
+    parts[3] > 23 ||
+    parts[4] > 59
+  ) {
+    return null;
+  }
+  const iso = new Date(
+    `${year}-${month}-${day}T${hour}:${minute}:00+08:00`,
+  );
+  if (Number.isNaN(iso.getTime())) return null;
+  const local = new Date(iso.getTime() + 8 * 60 * 60 * 1000);
+  if (
+    local.getUTCFullYear() !== Number(year) ||
+    local.getUTCMonth() + 1 !== Number(month) ||
+    local.getUTCDate() !== Number(day) ||
+    local.getUTCHours() !== Number(hour) ||
+    local.getUTCMinutes() !== Number(minute)
+  ) {
+    return null;
+  }
+  return iso.toISOString();
+}
+
+function scheduleValue(text, key) {
+  const normalized = String(text ?? "")
+    .replace(/[／]/g, "-")
+    .replace(/[：]/g, ":");
+  const match = normalized.match(
+    new RegExp(
+      `${key}\\s*=\\s*(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})\\s+(\\d{1,2}):(\\d{2})`,
+      "i",
+    ),
+  );
+  if (!match) return null;
+  return taipeiLocalIso(
+    [
+      match[1],
+      match[2].padStart(2, "0"),
+      match[3].padStart(2, "0"),
+    ].join("-"),
+    [
+      match[4].padStart(2, "0"),
+      match[5].padStart(2, "0"),
+    ].join(":"),
+  );
+}
+
+export function parseTigerairSaleScheduleText(text) {
+  const saleStartAt = scheduleValue(text, "SALE_START");
+  if (!saleStartAt) return null;
+  const saleEndAt = scheduleValue(text, "SALE_END");
+  const travelStartAt = scheduleValue(text, "TRAVEL_START");
+  const travelEndAt = scheduleValue(text, "TRAVEL_END");
+  if (
+    saleEndAt &&
+    Date.parse(saleEndAt) < Date.parse(saleStartAt)
+  ) {
+    return null;
+  }
+  return {
+    saleStartAt,
+    saleEndAt,
+    travelStartAt,
+    travelEndAt,
+  };
+}
+
+export function withTigerairSaleSchedule(
+  item,
+  schedule,
+  checkedAt,
+) {
+  const updated = {
+    ...clone(item),
+    ...(schedule ?? {}),
+    saleScheduleCheckedAt: checkedAt,
+    saleScheduleSource: schedule
+      ? "official-image-workers-ai"
+      : "not-found",
+  };
+  updated.fingerprint = offerFingerprint(updated);
+  return updated;
+}
+
+export function formatTigerairTaipeiTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "時間格式錯誤";
+  return new Intl.DateTimeFormat("zh-TW", {
+    timeZone: TIGERAIR_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
+export function applyTigerairSaleOpenReminders(
+  state,
+  nowIso,
+  { graceMinutes = 120 } = {},
+) {
+  const updated = clone(state);
+  updated.products ??= {};
+  const events = [];
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(now)) {
+    throw new Error("虎航開賣提醒檢查時間無效");
+  }
+
+  for (const item of Object.values(updated.products)) {
+    const saleStart = Date.parse(item.saleStartAt ?? "");
+    if (
+      Number.isNaN(saleStart) ||
+      item.saleOpenNotifiedAt ||
+      now < saleStart ||
+      now - saleStart > graceMinutes * 60 * 1000
+    ) {
+      continue;
+    }
+    item.saleOpenNotifiedAt = nowIso;
+    events.push({
+      kind: "sale_open",
+      title: "⏰ 台灣虎航優惠開始販售",
+      message: [
+        item.name,
+        "",
+        `開賣時間：${formatTigerairTaipeiTime(
+          item.saleStartAt,
+        )}`,
+        "現在可前往官方頁面查看並購票。",
+      ].join("\n"),
+      url: item.url,
+      disablePreview: false,
+    });
   }
   return { state: updated, events };
 }
@@ -414,6 +611,13 @@ export function formatTigerairSummary(snapshot, verifiedAt) {
           "",
           `${index + 1}. ${item.name}`,
           ...(item.description ? [item.description] : []),
+          ...(item.saleStartAt
+            ? [
+                `開賣：${formatTigerairTaipeiTime(
+                  item.saleStartAt,
+                )}`,
+              ]
+            : []),
           item.url,
         ])
       : ["", "目前官網沒有辨識到新的機票優惠。"]),

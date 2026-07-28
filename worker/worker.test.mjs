@@ -8,6 +8,7 @@ import {
   COSTCO_DESKTOP_URL,
   PCHOME_SEARCH_URL,
   TIGERAIR_HOME_URL,
+  TIGERAIR_MONITOR_CRON,
   buildBaselineInventoryEvent,
   buildTestNotificationEvent,
   default as worker,
@@ -432,6 +433,8 @@ const tigerairDetailHtml = `
     <title>世界老虎日！台虎全航線優惠 TWD 1,199 起</title>
     <meta name="description"
       content="7/29 購買台灣虎航機票，一起守護老虎">
+    <meta property="og:image"
+      content="https://strapi-assets.tigerairtw.com/TW_M_960x420_3_5c48d4429e.jpg">
   </head></html>
 `;
 
@@ -1054,6 +1057,7 @@ test("answers Sony commands through Cloudflare Browser Run", async () => {
 });
 
 test("answers Tigerair commands from verified official offers", async () => {
+  let visionCalls = 0;
   const fakeBrowser = {
     quickAction: async () =>
       Response.json({
@@ -1086,17 +1090,38 @@ test("answers Tigerair commands from verified official offers", async () => {
       headers: { "Content-Type": "text/html" },
     });
   };
+  const fakeAi = {
+    async run(model, input) {
+      visionCalls += 1;
+      assert.equal(
+        model,
+        "@cf/moondream/moondream3.1-9B-A2B",
+      );
+      assert.match(input.image, /strapi-assets\.tigerairtw\.com/);
+      return {
+        answer: [
+          "SALE_START=2026-07-29 10:00",
+          "SALE_END=2026-07-30 23:59",
+          "TRAVEL_START=2026-07-29 00:00",
+          "TRAVEL_END=2026-10-24 23:59",
+        ].join("\n"),
+      };
+    },
+  };
 
   const reply = await replyForCommand(
     "/tigerair",
     fakeFetch,
     null,
     fakeBrowser,
+    fakeAi,
   );
 
   assert.match(reply, /台灣虎航官方優惠/);
   assert.match(reply, /全航線優惠 TWD 1,199 起/);
+  assert.match(reply, /開賣：2026\/07\/29 10:00/);
   assert.match(reply, /tigeresg/);
+  assert.equal(visionCalls, 1);
 });
 
 test("answers Tigerair commands when optional Browser Run is incomplete", async () => {
@@ -1217,7 +1242,9 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /酷澎 排程：等待第一次執行/);
   assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
   assert.match(reply, /台灣虎航 排程：等待第一次執行/);
-  assert.match(reply, /商品與台灣虎航官方優惠/);
+  assert.match(reply, /商品每 5 分鐘、虎航公告每 30 分鐘/);
+  assert.match(reply, /虎航開賣提醒：每 5 分鐘/);
+  assert.equal(TIGERAIR_MONITOR_CRON, "4,34 * * * *");
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
