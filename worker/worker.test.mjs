@@ -1065,11 +1065,27 @@ test("answers Tigerair commands from verified official offers", async () => {
         },
       }),
   };
-  const fakeFetch = async () =>
-    new Response(tigerairDetailHtml, {
+  const fakeFetch = async (url) => {
+    if (String(url).includes("/api/home-banners")) {
+      return Response.json({
+        data: {
+          homeBanners: {
+            data: [{
+              attributes: {
+                linkTo: {
+                  url: "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+                },
+              },
+            }],
+          },
+        },
+      });
+    }
+    return new Response(tigerairDetailHtml, {
       status: 200,
       headers: { "Content-Type": "text/html" },
     });
+  };
 
   const reply = await replyForCommand(
     "/tigerair",

@@ -1,5 +1,7 @@
 export const TIGERAIR_HOME_URL =
   "https://www.tigerairtw.com/zh-TW/index";
+export const TIGERAIR_BANNERS_API_URL =
+  "https://api-cms.tigerairtw.com/api/home-banners?language=zh-TW&perPage=100";
 
 const OFFER_TERMS =
   /機票|票價|航線|購票|促銷|優惠|特惠|開賣|快閃|折扣|未稅/i;
@@ -106,6 +108,20 @@ export function assertTigerairOfferUrl(value) {
   return url;
 }
 
+export function assertTigerairBannerFeedUrl(value) {
+  const url = new URL(String(value ?? ""));
+  if (
+    url.protocol !== "https:" ||
+    url.hostname.toLowerCase() !== "api-cms.tigerairtw.com" ||
+    url.pathname !== "/api/home-banners" ||
+    url.searchParams.get("language") !== "zh-TW" ||
+    url.searchParams.get("perPage") !== "100"
+  ) {
+    throw new Error("虎航首頁輪播來源不符");
+  }
+  return url;
+}
+
 function offerId(url) {
   return url.href.toLowerCase().replace(/\/+$/, "");
 }
@@ -207,6 +223,44 @@ export function parseTigerairHomepage(html) {
     promotions,
     detailUrls: detailUrls.slice(0, 4),
   };
+}
+
+export function parseTigerairBannerFeed(payload) {
+  const banners = payload?.data?.homeBanners?.data;
+  if (!Array.isArray(banners)) {
+    throw new Error("虎航首頁輪播資料格式無法辨識");
+  }
+  const detailUrls = [];
+  for (const banner of banners) {
+    const candidate = banner?.attributes?.linkTo?.url;
+    if (!candidate) continue;
+    try {
+      const verified = assertTigerairOfferUrl(candidate);
+      const host = verified.hostname.toLowerCase();
+      const path = verified.pathname.toLowerCase();
+      const isOfficialEvent =
+        (
+          host === "www.tigerairtw.com" &&
+          path.startsWith("/zh-tw/events/")
+        ) ||
+        (
+          host === "static.tigerairtw.com" &&
+          path.startsWith("/www/events/")
+        );
+      if (
+        isOfficialEvent &&
+        !detailUrls.includes(verified.href)
+      ) {
+        detailUrls.push(verified.href);
+      }
+    } catch {
+      // Homepage banners may legitimately link to unrelated partners.
+    }
+  }
+  if (banners.length > 0 && detailUrls.length === 0) {
+    throw new Error("虎航首頁輪播沒有可驗證的官方活動連結");
+  }
+  return detailUrls.slice(0, 4);
 }
 
 export function parseTigerairPromotionDetail(html, pageUrl) {

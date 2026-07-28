@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   applyTigerairPromotions,
+  assertTigerairBannerFeedUrl,
   assertTigerairOfferUrl,
   buildTigerairBaselineEvent,
+  parseTigerairBannerFeed,
   parseTigerairHomepage,
   parseTigerairPromotionDetail,
   tigerairSnapshot,
@@ -55,6 +57,56 @@ test("accepts only official Tigerair offer URL shapes", () => {
     ),
     /來源不符/,
   );
+});
+
+test("extracts current official events from the homepage banner feed", () => {
+  assert.equal(
+    assertTigerairBannerFeedUrl(
+      "https://api-cms.tigerairtw.com/api/home-banners?language=zh-TW&perPage=100",
+    ).hostname,
+    "api-cms.tigerairtw.com",
+  );
+  assert.throws(
+    () => assertTigerairBannerFeedUrl(
+      "https://api-cms.tigerairtw.com/api/home-banners?language=en-US&perPage=100",
+    ),
+    /來源不符/,
+  );
+
+  const detailUrls = parseTigerairBannerFeed({
+    data: {
+      homeBanners: {
+        data: [
+          {
+            attributes: {
+              linkTo: {
+                url: "https://partner.example.com/tigerair-sale",
+              },
+            },
+          },
+          {
+            attributes: {
+              linkTo: {
+                url: "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+              },
+            },
+          },
+          {
+            attributes: {
+              linkTo: {
+                url: "https://static.tigerairtw.com/www/events/2607KMQ/",
+              },
+            },
+          },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(detailUrls, [
+    "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+    "https://static.tigerairtw.com/www/events/2607KMQ/",
+  ]);
 });
 
 test("extracts official fare offers and excludes unrelated partners", () => {

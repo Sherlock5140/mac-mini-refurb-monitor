@@ -21,11 +21,14 @@ import {
   sourceDisclosure,
 } from "./source-verification.js";
 import {
+  TIGERAIR_BANNERS_API_URL,
   TIGERAIR_HOME_URL,
   applyTigerairPromotions,
+  assertTigerairBannerFeedUrl,
   assertTigerairOfferUrl,
   buildTigerairBaselineEvent,
   formatTigerairSummary,
+  parseTigerairBannerFeed,
   tigerairSnapshot,
 } from "./tigerair-promotions.js";
 
@@ -1480,6 +1483,36 @@ async function fetchTigerairPromotions(
     throw new Error("Cloudflare Browser Run 尚未設定");
   }
   assertVerifiedSourceUrl("tigerair", TIGERAIR_HOME_URL);
+  assertTigerairBannerFeedUrl(TIGERAIR_BANNERS_API_URL);
+  const bannerResponse = await fetchImpl(
+    TIGERAIR_BANNERS_API_URL,
+    {
+      headers: {
+        Accept: "application/json",
+        "Accept-Language": "zh-TW,zh;q=0.9",
+        "x-language": "zh-TW",
+        "x-requested-with": "XMLHttpRequest",
+        "User-Agent":
+          "Mozilla/5.0 AppleWebKit/537.36 tigerair-offer-monitor/1.0",
+      },
+      cf: {
+        cacheEverything: true,
+        cacheTtl: 60,
+      },
+    },
+  );
+  if (!bannerResponse.ok) {
+    throw new Error(
+      `台灣虎航官方輪播 API HTTP ${bannerResponse.status}`,
+    );
+  }
+  assertTigerairBannerFeedUrl(
+    bannerResponse.url || TIGERAIR_BANNERS_API_URL,
+  );
+  const bannerDetailUrls = parseTigerairBannerFeed(
+    await bannerResponse.json(),
+  );
+
   const response = await browser.quickAction("content", {
     url: TIGERAIR_HOME_URL,
     gotoOptions: {
@@ -1518,8 +1551,14 @@ async function fetchTigerairPromotions(
   }
 
   const preview = tigerairSnapshot(html);
+  const verifiedDetailUrls = [
+    ...new Set([
+      ...bannerDetailUrls,
+      ...preview.detailUrls,
+    ]),
+  ].slice(0, 6);
   const detailPages = [];
-  for (const detailUrl of preview.detailUrls) {
+  for (const detailUrl of verifiedDetailUrls) {
     assertTigerairOfferUrl(detailUrl);
     const detailResponse = await fetchImpl(detailUrl, {
       headers: {
@@ -1535,9 +1574,7 @@ async function fetchTigerairPromotions(
       },
     });
     if (!detailResponse.ok) {
-      throw new Error(
-        `台灣虎航活動頁 HTTP ${detailResponse.status}`,
-      );
+      continue;
     }
     assertTigerairOfferUrl(
       detailResponse.url || detailUrl,
@@ -1546,6 +1583,14 @@ async function fetchTigerairPromotions(
       url: detailResponse.url || detailUrl,
       html: (await detailResponse.text()).slice(0, 500_000),
     });
+  }
+  if (
+    bannerDetailUrls.length > 0 &&
+    !detailPages.some(
+      (page) => page.url === bannerDetailUrls[0],
+    )
+  ) {
+    throw new Error("台灣虎航最新官方活動頁載入失敗");
   }
   return tigerairSnapshot(html, detailPages);
 }
