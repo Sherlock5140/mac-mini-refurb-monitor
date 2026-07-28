@@ -1276,7 +1276,9 @@ test("queries public ChatGPT Business promotion update metadata", async () => {
   const reply = await replyForCommand("/gptpromo", fakeFetch);
 
   assert.match(reply, /ChatGPT Business 公開優惠情報/);
+  assert.match(reply, /known_codes\.json 公開清單有新版本/);
   assert.match(reply, /社群情報，未經 OpenAI 官方驗證/);
+  assert.doesNotMatch(reply, /Refresh public metadata/);
   assert.match(reply, new RegExp(`${sha}$`, "m"));
   assert.match(reply, /不自動猜碼、試碼、切換地區、登入或付款/);
 });

@@ -58,13 +58,10 @@ export function parseChatgptPromoCommit(payload) {
   if (Number.isNaN(Date.parse(publishedAt))) {
     throw new Error("ChatGPT 優惠情報 commit 時間無效");
   }
-  const message = normalizeText(
-    String(row?.commit?.message ?? "").split(/\r?\n/, 1)[0],
-  ).slice(0, 240);
   const item = {
     sku: sha,
     name: "ChatGPT Business 公開優惠情報清單更新",
-    description: message || "公開清單有新版本",
+    description: "known_codes.json 公開清單有新版本",
     publishedAt: new Date(publishedAt).toISOString(),
     url: url.href,
     sourceStatus: "社群情報，未經 OpenAI 官方驗證",

@@ -46,7 +46,7 @@ test("parses commit metadata without exposing or validating promo codes", () => 
   );
   assert.equal(
     snapshot.targetProducts[0].description,
-    "Update public code list",
+    "known_codes.json 公開清單有新版本",
   );
   assert.match(
     snapshot.targetProducts[0].sourceStatus,
