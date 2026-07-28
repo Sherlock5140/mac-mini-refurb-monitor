@@ -1085,6 +1085,12 @@ test("answers Tigerair commands from verified official offers", async () => {
         },
       });
     }
+    if (String(url).includes("strapi-assets.tigerairtw.com")) {
+      return new Response(new Uint8Array([255, 216, 255, 217]), {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    }
     return new Response(tigerairDetailHtml, {
       status: 200,
       headers: { "Content-Type": "text/html" },
@@ -1097,14 +1103,11 @@ test("answers Tigerair commands from verified official offers", async () => {
         model,
         "@cf/moondream/moondream3.1-9B-A2B",
       );
-      assert.match(input.image, /strapi-assets\.tigerairtw\.com/);
+      assert.match(input.image, /^data:image\/jpeg;base64,/);
       return {
-        answer: [
-          "SALE_START=2026-07-29 10:00",
-          "SALE_END=2026-07-30 23:59",
-          "TRAVEL_START=2026-07-29 00:00",
-          "TRAVEL_END=2026-10-24 23:59",
-        ].join("\n"),
+        result: {
+          answer: "SALE_START=2026-07-29 10:00",
+        },
       };
     },
   };

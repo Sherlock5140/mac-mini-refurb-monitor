@@ -1484,6 +1484,7 @@ async function enrichTigerairSaleSchedules(
   snapshot,
   ai,
   previousProducts = {},
+  fetchImpl = fetch,
 ) {
   if (!Array.isArray(snapshot?.targetProducts)) return snapshot;
   const checkedAt = new Date().toISOString();
@@ -1519,28 +1520,89 @@ async function enrichTigerairSaleSchedules(
       continue;
     }
     try {
-      const result = await ai.run(TIGERAIR_VISION_MODEL, {
-        task: "query",
-        image: item.imageUrl,
-        question: [
-          "Read the Taiwan Tigerair promotion image exactly.",
-          "Extract only the airfare sale period and travel period.",
-          "Return exactly these four lines using Asia/Taipei local time:",
-          "SALE_START=YYYY-MM-DD HH:mm or NONE",
-          "SALE_END=YYYY-MM-DD HH:mm or NONE",
-          "TRAVEL_START=YYYY-MM-DD HH:mm or NONE",
-          "TRAVEL_END=YYYY-MM-DD HH:mm or NONE",
-          "Do not guess a missing date or time.",
-        ].join("\n"),
-        reasoning: false,
-        temperature: 0,
-        max_tokens: 180,
-        stream: false,
+      const imageResponse = await fetchImpl(item.imageUrl, {
+        headers: {
+          Accept: "image/jpeg,image/png,image/webp",
+        },
+        cf: {
+          cacheEverything: true,
+          cacheTtl: 86400,
+        },
       });
+      if (!imageResponse.ok) {
+        throw new Error(
+          `官方活動圖片 HTTP ${imageResponse.status}`,
+        );
+      }
+      const finalImageUrl = new URL(
+        imageResponse.url || item.imageUrl,
+      );
+      if (
+        finalImageUrl.protocol !== "https:" ||
+        finalImageUrl.hostname.toLowerCase() !==
+          "strapi-assets.tigerairtw.com"
+      ) {
+        throw new Error("官方活動圖片重新導向來源不符");
+      }
+      const contentType =
+        imageResponse.headers.get("Content-Type") || "image/jpeg";
+      if (!/^image\/(?:jpeg|png|webp)$/i.test(contentType)) {
+        throw new Error("官方活動圖片格式不支援");
+      }
+      const bytes = new Uint8Array(
+        await imageResponse.arrayBuffer(),
+      );
+      if (!bytes.length || bytes.length > 2_000_000) {
+        throw new Error("官方活動圖片大小不合理");
+      }
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 32768) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 32768),
+        );
+      }
+      const image =
+        `data:${contentType.split(";")[0]};base64,${btoa(binary)}`;
+      let result;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          result = await ai.run(TIGERAIR_VISION_MODEL, {
+            task: "query",
+            image,
+            question: [
+              "OCR the exact airfare PURCHASE SALE START date and time.",
+              "Do not use the travel period or sale end date.",
+              "Return only SALE_START=YYYY-MM-DD HH:mm.",
+              "Use Asia/Taipei local time and do not guess.",
+            ].join("\n"),
+            reasoning: false,
+            temperature: 0,
+            max_tokens: 80,
+            stream: false,
+          });
+          break;
+        } catch (error) {
+          if (
+            attempt === 2 ||
+            !String(error?.message ?? error).includes("3040")
+          ) {
+            throw error;
+          }
+        }
+      }
+      const parsed = parseTigerairSaleScheduleText(
+        result?.answer ?? result?.result?.answer,
+      );
+      const schedule = parsed
+        ? { saleStartAt: parsed.saleStartAt }
+        : null;
+      if (!schedule) {
+        throw new Error("圖片未辨識到可驗證的開賣起始時間");
+      }
       targetProducts.push(
         withTigerairSaleSchedule(
           item,
-          parseTigerairSaleScheduleText(result?.answer),
+          schedule,
           checkedAt,
         ),
       );
@@ -1685,6 +1747,7 @@ async function fetchTigerairPromotions(
     tigerairSnapshot(html, detailPages),
     ai,
     previousProducts,
+    fetchImpl,
   );
 }
 
