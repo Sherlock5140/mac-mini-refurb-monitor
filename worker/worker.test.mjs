@@ -52,6 +52,7 @@ function managementDbFixture() {
       created_at: "2026-07-28T00:00:00.000Z",
       updated_at: "2026-07-28T00:00:00.000Z",
       deleted_at: null,
+      archived_at: null,
     },
     {
       id: "coupang-sony-xm6",
@@ -63,6 +64,7 @@ function managementDbFixture() {
       created_at: "2026-07-28T00:00:00.000Z",
       updated_at: "2026-07-28T00:00:00.000Z",
       deleted_at: null,
+      archived_at: null,
     },
   ];
   const requests = [];
@@ -105,6 +107,11 @@ function managementDbFixture() {
       const target = targets.find((entry) => entry.id === values[2]);
       target.enabled = values[0];
       target.updated_at = values[1];
+    } else if (sql.includes("SET enabled = ?, archived_at = CASE")) {
+      const target = targets.find((entry) => entry.id === values[3]);
+      target.enabled = values[0];
+      if (values[1] === 1) target.archived_at = null;
+      target.updated_at = values[2];
     } else if (
       sql.includes("INSERT INTO monitor_change_requests")
     ) {
@@ -135,6 +142,21 @@ function managementDbFixture() {
       target.enabled = 0;
       target.deleted_at = values[0];
       target.updated_at = values[1];
+    } else if (
+      sql.includes("SET enabled = 0, archived_at = ?")
+    ) {
+      const target = targets.find((entry) => entry.id === values[2]);
+      target.enabled = 0;
+      target.archived_at = values[0];
+      target.updated_at = values[1];
+    } else if (
+      sql.includes("SET enabled = 0, deleted_at = NULL")
+    ) {
+      const target = targets.find((entry) => entry.id === values[1]);
+      target.enabled = 0;
+      target.deleted_at = null;
+      target.archived_at = null;
+      target.updated_at = values[0];
     } else if (
       sql.includes("SET status = 'confirmed'")
     ) {
@@ -475,6 +497,35 @@ test("recognizes common Traditional Chinese text without Workers AI", async () =
     deterministicNaturalLanguageIntent("恢復好市多追蹤"),
     { action: "resume", target: "Costco" },
   );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent(
+      "新增監控 https://shop.example.com/item/1",
+    ),
+    {
+      action: "add",
+      target: "https://shop.example.com/item/1",
+    },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("封存 Sony"),
+    { action: "archive", target: "Sony" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查看垃圾桶"),
+    { action: "trash" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("目前有哪些監控異常"),
+    { action: "errors" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("重新檢查 Costco"),
+    { action: "retry", target: "Costco" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("診斷酷澎失敗原因"),
+    { action: "diagnose", target: "酷澎" },
+  );
 });
 
 test("deterministic target listing works even when Workers AI is unavailable", async () => {
@@ -527,6 +578,12 @@ test("lists, pauses, resumes, and confirm-removes registered targets", async () 
   assert.equal(db.targets[1].enabled, 0);
   assert.match(await manageMonitorTargets("/resume Sony", db), /已恢復/);
   assert.equal(db.targets[1].enabled, 1);
+  assert.match(await manageMonitorTargets("/archive Sony", db), /已封存/);
+  assert.ok(db.targets[1].archived_at);
+  assert.match(await manageMonitorTargets("/restore Sony", db), /已還原/);
+  assert.equal(db.targets[1].enabled, 0);
+  assert.equal(db.targets[1].archived_at, null);
+  assert.match(await manageMonitorTargets("/resume Sony", db), /已恢復/);
 
   const removalReply = await manageMonitorTargets("/remove Sony", db);
   const code = removalReply.match(/\/confirm ([A-F0-9]{6})/)?.[1];
@@ -540,7 +597,11 @@ test("lists, pauses, resumes, and confirm-removes registered targets", async () 
   assert.match(confirmationReply, /已移除監控目標/);
   assert.equal(db.targets[1].enabled, 0);
   assert.ok(db.targets[1].deleted_at);
-  assert.equal(db.audit.length, 3);
+  assert.match(await manageMonitorTargets("/trash", db), /酷澎 Sony/);
+  assert.match(await manageMonitorTargets("/restore Sony", db), /已還原/);
+  assert.equal(db.targets[1].deleted_at, null);
+  assert.equal(db.targets[1].enabled, 0);
+  assert.equal(db.audit.length, 7);
 });
 
 test("tracks a conservative daily AI chat allowance", async () => {
@@ -865,6 +926,25 @@ test("answers Costco commands with live Costco data", async () => {
   assert.match(reply, /排除 M4 Pro／Max/);
 });
 
+test("falls back to the Costco category page when its API fails", async () => {
+  let calls = 0;
+  const fakeFetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response("temporary", { status: 503 });
+    }
+    return new Response(costcoHtml, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+  };
+
+  const reply = await replyForCommand("/costco", fakeFetch);
+
+  assert.equal(calls, 2);
+  assert.match(reply, /符合條件且有貨：1 項/);
+});
+
 test("answers PChome commands with live PChome data", async () => {
   const fakeFetch = async () =>
     new Response(pchomeHtml, {
@@ -1004,6 +1084,8 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/pchome－立即查詢 PChome 24h 庫存與價格/);
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
+  assert.match(reply, /\/errors－查看目前異常與自動修復狀態/);
+  assert.match(reply, /\/retry 目標－立即重試一次指定監控/);
 });
 
 test("public health response does not expose operational details", async () => {

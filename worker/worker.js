@@ -4,6 +4,17 @@ import {
   emptyMonitorState,
   recoveryEvent,
 } from "./monitor-state.js";
+import {
+  genericProductSnapshot,
+  parseGenericProductPage,
+  validatePublicProductUrl,
+} from "./generic-product.js";
+import {
+  circuitStatus,
+  classifyMonitorError,
+  runWithRetry,
+  validateSnapshot,
+} from "./self-healing.js";
 
 const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
@@ -41,6 +52,14 @@ const AI_CHAT_ACTIONS = new Set([
   "pause",
   "resume",
   "remove",
+  "add",
+  "archive",
+  "trash",
+  "restore",
+  "errors",
+  "diagnose",
+  "retry",
+  "recover",
 ]);
 const AI_DIAGNOSTIC_STATES = new Set([
   "blocked",
@@ -142,7 +161,40 @@ export function deterministicNaturalLanguageIntent(text) {
   const normalized = normalizeText(text);
   const lowered = normalized.toLowerCase();
   const target = targetNameFromNaturalLanguage(normalized);
+  const url = normalized.match(/https:\/\/[^\s<>]+/i)?.[0] ?? "";
 
+  if (/(?:錯誤|異常).*(?:列表|清單|狀態)|(?:哪些|目前).*(?:錯誤|異常)/i.test(normalized)) {
+    return { action: "errors" };
+  }
+  if (/(?:診斷|排查|為什麼失敗|失敗原因)/i.test(normalized)) {
+    return { action: "diagnose", target };
+  }
+  if (/(?:重新檢查|立即重試|重試)/i.test(normalized)) {
+    return target
+      ? { action: "retry", target }
+      : { action: "errors" };
+  }
+  if (/(?:嘗試恢復|解除隔離|解除冷卻)/i.test(normalized)) {
+    return target
+      ? { action: "recover", target }
+      : { action: "errors" };
+  }
+  if (url && /(?:新增|加入|建立|監控|追蹤)/i.test(normalized)) {
+    return { action: "add", target: url };
+  }
+  if (/(?:垃圾桶|已刪除)/i.test(normalized) && /(?:查看|列出|顯示)/i.test(normalized)) {
+    return { action: "trash" };
+  }
+  if (/(?:還原|復原)/i.test(normalized)) {
+    return target
+      ? { action: "restore", target }
+      : { action: "trash" };
+  }
+  if (/(?:封存|歸檔)/i.test(normalized)) {
+    return target
+      ? { action: "archive", target }
+      : { action: "targets" };
+  }
   if (/(?:列出|查看|顯示|有哪些|目前).*(?:監控|追蹤)(?:目標|項目|商品|清單|列表)?|^(?:監控|追蹤).*(?:清單|列表)$/i.test(normalized)) {
     return { action: "targets" };
   }
@@ -201,7 +253,9 @@ export async function interpretNaturalLanguage(text, ai) {
           "將使用者意圖分類成 check、costco、pchome、coupang、sony、",
           "buy、status、help 或 chat。需要即時商品、價格或狀態時必須",
           "選擇對應工具，禁止自行猜測。管理意圖使用 targets、pause、",
-          "resume 或 remove，並將目標名稱放在 target。chat 只回答本監控",
+          "resume、remove、archive、trash、restore、add、errors、diagnose、",
+          "retry 或 recover，並將目標名稱",
+          "或新增網址放在 target。chat 只回答本監控",
           "系統的使用方式。新增未知網站只能說明需先建立來源 adapter。",
           "輸出 JSON：{\"action\":\"...\",\"target\":\"...\",\"reply\":\"...\"}。",
           "選擇工具時 reply 留空；選擇 chat 時 reply 不超過 120 字。",
@@ -1143,10 +1197,18 @@ function helpMessage() {
     "/buy－列出符合條件的商品與購買連結",
     "/status－確認所有商品與購物站的排程狀態",
     "/targets－列出目前監控目標",
+    "/add 網址－建立公開商品監控草稿",
     "/pause 目標－暫停指定監控",
     "/resume 目標－恢復指定監控",
+    "/archive 目標－封存並保留歷史",
     "/remove 目標－建立刪除確認要求",
+    "/trash－查看垃圾桶",
+    "/restore 目標－從封存或垃圾桶還原",
     "/confirm 驗證碼－確認停用並移除目標",
+    "/errors－查看目前異常與自動修復狀態",
+    "/diagnose 目標－診斷指定監控",
+    "/retry 目標－立即重試一次指定監控",
+    "/recover 目標－略過冷卻並嘗試恢復",
     "/test－傳送一則 Cloudflare 主動通知測試",
     "/link－開啟 Apple 整修 Mac 購買頁",
     "/help－顯示這份說明",
@@ -1180,9 +1242,31 @@ async function fetchInventory(fetchImpl, ai = null) {
 }
 
 async function fetchCostcoInventory(fetchImpl, ai = null) {
-  const response = await fetchImpl(COSTCO_PRODUCTS_API_URL, {
+  let apiError;
+  try {
+    const response = await fetchImpl(COSTCO_PRODUCTS_API_URL, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "User-Agent":
+          "Mozilla/5.0 AppleWebKit/537.36 mac-mini-refurb-monitor-worker/1.0",
+      },
+      cf: {
+        cacheEverything: true,
+        cacheTtl: 60,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Costco 商品 API HTTP ${response.status}`);
+    }
+    return parseCostcoApiInventory(await response.json());
+  } catch (error) {
+    apiError = error instanceof Error ? error.message : "未知 API 錯誤";
+  }
+  const response = await fetchImpl(COSTCO_DESKTOP_URL, {
     headers: {
-      Accept: "application/json",
+      Accept: "text/html,application/xhtml+xml",
       "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
       "Cache-Control": "no-cache",
       "User-Agent":
@@ -1194,9 +1278,24 @@ async function fetchCostcoInventory(fetchImpl, ai = null) {
     },
   });
   if (!response.ok) {
-    throw new Error(`Costco 商品 API HTTP ${response.status}`);
+    throw new Error(
+      `${apiError}；Costco 分類頁 HTTP ${response.status}`,
+    );
   }
-  return parseCostcoApiInventory(await response.json());
+  try {
+    return await parseWithAiDiagnostics({
+      ai,
+      source: "Costco",
+      html: await response.text(),
+      parser: parseCostcoInventory,
+    });
+  } catch (error) {
+    throw new Error(
+      `${apiError}；備援分類頁${
+        error instanceof Error ? error.message : "解析失敗"
+      }`,
+    );
+  }
 }
 
 async function fetchPchomeInventory(fetchImpl, ai = null) {
@@ -1308,6 +1407,14 @@ function scheduleStatusLine(label, monitor) {
   if (monitor?.enabled === false) {
     return `${label} 排程：已暫停`;
   }
+  const circuit = circuitStatus(monitor);
+  if (circuit.open) {
+    return [
+      `${label} 排程：自動冷卻中`,
+      `連續錯誤：${monitor.consecutiveErrors}`,
+      `預計重試：${taipeiTime(new Date(circuit.retryAt))}`,
+    ].join("\n");
+  }
   if (!monitor?.lastSuccessAt) {
     return `${label} 排程：等待第一次執行`;
   }
@@ -1318,14 +1425,59 @@ function scheduleStatusLine(label, monitor) {
   ].join("\n");
 }
 
+function formatMonitorDiagnostics(status, targetName = "") {
+  const sources = [
+    ["Apple", status?.apple],
+    ["Costco", status?.costco],
+    ["PChome", status?.pchome],
+    ["酷澎 Mac mini", status?.coupang],
+    ["酷澎 Sony", status?.sony],
+  ].filter(([label]) =>
+    !targetName ||
+    normalizeText(label).toLowerCase().includes(
+      normalizeText(targetName).toLowerCase(),
+    )
+  );
+  const unhealthy = sources.filter(([, state]) =>
+    state?.enabled !== false && Number(state?.consecutiveErrors ?? 0) > 0
+  );
+  if (unhealthy.length === 0) {
+    return targetName
+      ? `✅ ${targetName} 目前沒有連續錯誤。`
+      : "✅ 目前固定來源沒有連續錯誤。";
+  }
+  return [
+    "🩺 監控自動修復狀態",
+    "",
+    ...unhealthy.flatMap(([label, state]) => {
+      const circuit = circuitStatus(state);
+      return [
+        `${circuit.open ? "🟠" : "🟡"} ${label}`,
+        `連續錯誤：${state.consecutiveErrors}`,
+        `類型：${classifyMonitorError(state.lastError)}`,
+        `原因：${state.lastError || "未記錄"}`,
+        ...(circuit.open
+          ? [`自動探測：${taipeiTime(new Date(circuit.retryAt))}`]
+          : ["自動處理：下一輪排程會再次嘗試"]),
+        "",
+      ];
+    }),
+    "系統會保留最後可信資料，不把錯誤當成下架或降價。",
+  ].join("\n").trim();
+}
+
 export async function loadMonitorTargets(db, {
   includeDeleted = false,
+  includeArchived = true,
 } = {}) {
+  const conditions = [];
+  if (!includeDeleted) conditions.push("deleted_at IS NULL");
+  if (!includeArchived) conditions.push("archived_at IS NULL");
   const result = await db.prepare(
     `SELECT id, label, adapter_key, source_url, config_json, enabled,
-      created_at, updated_at, deleted_at
+      created_at, updated_at, deleted_at, archived_at
     FROM monitor_targets
-    ${includeDeleted ? "" : "WHERE deleted_at IS NULL"}
+    ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
     ORDER BY created_at, id`,
   ).all();
   return (result?.results ?? []).map((row) => ({
@@ -1338,6 +1490,7 @@ export async function loadMonitorTargets(db, {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
+    archivedAt: row.archived_at,
   }));
 }
 
@@ -1351,6 +1504,10 @@ function findMonitorTarget(targets, query) {
   const key = normalizedTargetKey(query);
   if (!key) {
     return null;
+  }
+  const indexMatch = key.match(/(?:第)?(\d+)(?:項)?/);
+  if (indexMatch) {
+    return targets[Number(indexMatch[1]) - 1] ?? null;
   }
   const aliases = {
     apple: "apple-mac-mini",
@@ -1388,12 +1545,30 @@ export function formatMonitorTargets(targets) {
     "📋 監控目標",
     "",
     ...targets.map((target, index) =>
-      `${index + 1}. ${target.enabled ? "🟢" : "⏸️"} ${target.label}\n` +
+      `${index + 1}. ${
+        target.archivedAt ? "📦" : target.enabled ? "🟢" : "⏸️"
+      } ${target.label}\n` +
       `ID：${target.id}`
     ),
     "",
     "可用自然語言說「暫停 Sony」或「恢復 Costco」。",
-    "新增未知網站前需先完成相容性檢查與來源 adapter。",
+    "貼上公開 HTTPS 商品網址可建立新增草稿。",
+  ].join("\n");
+}
+
+export function formatMonitorTrash(targets) {
+  const deleted = targets.filter((target) => target.deletedAt);
+  if (!deleted.length) {
+    return "🗑️ 垃圾桶目前是空的。";
+  }
+  return [
+    "🗑️ 垃圾桶",
+    "",
+    ...deleted.map((target, index) =>
+      `${index + 1}. ${target.label}\nID：${target.id}`
+    ),
+    "",
+    "傳送「還原 商品名稱」可恢復為暫停狀態。",
   ].join("\n");
 }
 
@@ -1402,9 +1577,10 @@ async function setMonitorTargetEnabled(db, target, enabled) {
   await db.batch([
     db.prepare(
       `UPDATE monitor_targets
-      SET enabled = ?, updated_at = ?
+      SET enabled = ?, archived_at = CASE WHEN ? = 1 THEN NULL ELSE archived_at END,
+        updated_at = ?
       WHERE id = ? AND deleted_at IS NULL`,
-    ).bind(enabled ? 1 : 0, now, target.id),
+    ).bind(enabled ? 1 : 0, enabled ? 1 : 0, now, target.id),
     db.prepare(
       `INSERT INTO monitor_audit_log (
         action, target_id, summary, created_at
@@ -1446,8 +1622,137 @@ async function requestMonitorTargetRemoval(db, target) {
   return confirmationCode;
 }
 
+async function fetchGenericProductPreview(urlValue, fetchImpl = fetch) {
+  const url = validatePublicProductUrl(urlValue);
+  const response = await fetchImpl(url.href, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+      "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 personal-monitor/1.0",
+    },
+    redirect: "manual",
+  });
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error("網址會重新導向，請貼上重新導向後的最終 HTTPS 網址");
+  }
+  if (!response.ok) {
+    throw new Error(`商品頁 HTTP ${response.status}`);
+  }
+  validatePublicProductUrl(response.url || url.href);
+  const contentLength = Number(response.headers.get("Content-Length"));
+  if (Number.isFinite(contentLength) && contentLength > 2_000_000) {
+    throw new Error("商品頁過大，需要專用網站 adapter");
+  }
+  const html = await response.text();
+  if (html.length > 2_000_000) {
+    throw new Error("商品頁過大，需要專用網站 adapter");
+  }
+  return {
+    product: parseGenericProductPage(html, response.url || url.href),
+    sourceUrl: url.href,
+  };
+}
+
+export async function createGenericMonitorDraft(
+  urlValue,
+  db,
+  fetchImpl = fetch,
+) {
+  const { product, sourceUrl } = await fetchGenericProductPreview(
+    urlValue,
+    fetchImpl,
+  );
+  const now = new Date();
+  const code = crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase();
+  const targetId = `custom-${crypto.randomUUID().slice(0, 12)}`;
+  const payload = {
+    targetId,
+    label: product.name.slice(0, 120),
+    adapterKey: "generic-jsonld",
+    sourceUrl,
+    config: {
+      stable_target_id: product.stableId,
+      currency: product.currency,
+      notification_events: ["new", "restock", "price_drop", "removed"],
+      schedule: "*/5 * * * *",
+    },
+  };
+  await db.prepare(
+    `INSERT INTO monitor_add_drafts (
+      confirmation_code, payload_json, status, expires_at, created_at
+    ) VALUES (?, ?, 'pending', ?, ?)`,
+  ).bind(
+    code,
+    JSON.stringify(payload),
+    new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+    now.toISOString(),
+  ).run();
+  return [
+    "📝 新增監控預覽",
+    "",
+    `商品：${product.name}`,
+    `價格：NT$${product.priceTwd.toLocaleString("en-US")}`,
+    `庫存：${product.available ? "有貨" : "目前缺貨"}`,
+    `網址：${product.url}`,
+    "",
+    "通知：新上架、補貨、降價、確認下架",
+    "排程：約每 5 分鐘",
+    "",
+    `10 分鐘內回覆：/confirm ${code}`,
+    "確認前不會啟用或發送通知。",
+  ].join("\n");
+}
+
 async function confirmMonitorTargetChange(db, confirmationCode) {
   const code = normalizeText(confirmationCode).toUpperCase();
+  const addDraft = await db.prepare(
+    `SELECT id, payload_json, expires_at
+    FROM monitor_add_drafts
+    WHERE confirmation_code = ? AND status = 'pending'`,
+  ).bind(code).first();
+  if (addDraft) {
+    if (new Date(addDraft.expires_at).getTime() <= Date.now()) {
+      return "新增草稿已逾時，請重新貼上商品網址。";
+    }
+    const payload = JSON.parse(addDraft.payload_json);
+    const now = new Date().toISOString();
+    await db.batch([
+      db.prepare(
+        `INSERT INTO monitor_targets (
+          id, label, adapter_key, source_url, config_json, enabled,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      ).bind(
+        payload.targetId,
+        payload.label,
+        payload.adapterKey,
+        payload.sourceUrl,
+        JSON.stringify(payload.config),
+        now,
+        now,
+      ),
+      db.prepare(
+        `INSERT INTO generic_monitor_state (
+          target_id, initialized, products_json, consecutive_errors
+        ) VALUES (?, 0, '{}', 0)`,
+      ).bind(payload.targetId),
+      db.prepare(
+        `UPDATE monitor_add_drafts
+        SET status = 'confirmed', confirmed_at = ?
+        WHERE id = ?`,
+      ).bind(now, addDraft.id),
+      db.prepare(
+        `INSERT INTO monitor_audit_log (
+          action, target_id, summary, created_at
+        ) VALUES ('add', ?, '確認新增通用商品監控', ?)`,
+      ).bind(payload.targetId, now),
+    ]);
+    return [
+      `✅ 已新增並啟用：${payload.label}`,
+      `ID：${payload.targetId}`,
+      "已建立初始基準；之後符合通知條件才會推播。",
+    ].join("\n");
+  }
   const request = await db.prepare(
     `SELECT id, action, target_id, expires_at
     FROM monitor_change_requests
@@ -1488,6 +1793,44 @@ export async function manageMonitorTargets(text, db) {
   if (action === "confirm") {
     return confirmMonitorTargetChange(db, argument);
   }
+  if (action === "trash") {
+    return formatMonitorTrash(
+      await loadMonitorTargets(db, {
+        includeDeleted: true,
+        includeArchived: true,
+      }),
+    );
+  }
+  if (action === "restore") {
+    const allTargets = await loadMonitorTargets(db, {
+      includeDeleted: true,
+      includeArchived: true,
+    });
+    const target = findMonitorTarget(
+      allTargets.filter((item) => item.deletedAt || item.archivedAt),
+      argument,
+    );
+    if (!target) {
+      return `找不到可還原的「${argument || "未指定"}」。\n\n${
+        formatMonitorTrash(allTargets)
+      }`;
+    }
+    const now = new Date().toISOString();
+    await db.batch([
+      db.prepare(
+        `UPDATE monitor_targets
+        SET enabled = 0, deleted_at = NULL, archived_at = NULL,
+          updated_at = ?
+        WHERE id = ?`,
+      ).bind(now, target.id),
+      db.prepare(
+        `INSERT INTO monitor_audit_log (
+          action, target_id, summary, created_at
+        ) VALUES ('restore', ?, '還原為暫停狀態', ?)`,
+      ).bind(target.id, now),
+    ]);
+    return `✅ 已還原為暫停狀態：${target.label}\n傳送「恢復 ${target.label}」即可重新監控。`;
+  }
   const targets = await loadMonitorTargets(db);
   if (action === "targets") {
     return formatMonitorTargets(targets);
@@ -1523,6 +1866,22 @@ export async function manageMonitorTargets(text, db) {
       `10 分鐘內回覆：/confirm ${code}`,
     ].join("\n");
   }
+  if (action === "archive") {
+    const now = new Date().toISOString();
+    await db.batch([
+      db.prepare(
+        `UPDATE monitor_targets
+        SET enabled = 0, archived_at = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL`,
+      ).bind(now, now, target.id),
+      db.prepare(
+        `INSERT INTO monitor_audit_log (
+          action, target_id, summary, created_at
+        ) VALUES ('archive', ?, '封存監控目標', ?)`,
+      ).bind(target.id, now),
+    ]);
+    return `📦 已封存：${target.label}\n歷史資料保留，可隨時還原。`;
+  }
   return formatMonitorTargets(targets);
 }
 
@@ -1533,6 +1892,7 @@ export async function replyForCommand(
   browser = null,
   ai = null,
   db = null,
+  env = null,
 ) {
   const rawCommand = normalizeText(text).split(/\s+/, 1)[0] || "";
   const command = rawCommand.split("@", 1)[0].toLowerCase();
@@ -1541,11 +1901,34 @@ export async function replyForCommand(
     return helpMessage();
   }
   if (
-    ["/targets", "/pause", "/resume", "/remove", "/confirm"].includes(
+    [
+      "/targets", "/pause", "/resume", "/archive", "/remove",
+      "/trash", "/restore", "/confirm",
+    ].includes(
       command,
     )
   ) {
     return db ? manageMonitorTargets(text, db) : helpMessage();
+  }
+  if (command === "/add") {
+    const url = normalizeText(text).split(/\s+/).slice(1).join(" ");
+    return db && env
+      ? createGenericMonitorDraft(url, db, fetchImpl)
+      : helpMessage();
+  }
+  if (["/errors", "/diagnose"].includes(command)) {
+    if (!statusProvider) return helpMessage();
+    const argument = normalizeText(text).split(/\s+/).slice(1).join(" ");
+    return formatMonitorDiagnostics(
+      await statusProvider(),
+      command === "/diagnose" ? argument : "",
+    );
+  }
+  if (["/retry", "/recover"].includes(command)) {
+    const argument = normalizeText(text).split(/\s+/).slice(1).join(" ");
+    return env
+      ? runMonitorNow(env, argument)
+      : helpMessage();
   }
   if (command === "/link") {
     return `Apple 台灣整修 Mac 購買頁：\n${APPLE_REFURB_URL}`;
@@ -1629,12 +2012,33 @@ export async function replyForNaturalLanguage(text, env) {
 }
 
 async function replyForNaturalLanguageIntent(intent, env) {
-  if (["targets", "pause", "resume", "remove"].includes(intent.action)) {
+  if (intent.action === "add") {
+    return createGenericMonitorDraft(
+      intent.target || "",
+      env.MONITOR_DB,
+      fetch,
+    );
+  }
+  if (
+    [
+      "targets", "pause", "resume", "archive", "remove", "trash",
+      "restore",
+    ].includes(intent.action)
+  ) {
     const argument = intent.target || "";
     return manageMonitorTargets(
       `/${intent.action}${argument ? ` ${argument}` : ""}`,
       env.MONITOR_DB,
     );
+  }
+  if (["errors", "diagnose"].includes(intent.action)) {
+    return formatMonitorDiagnostics(
+      await monitorStatus(env),
+      intent.action === "diagnose" ? intent.target || "" : "",
+    );
+  }
+  if (["retry", "recover"].includes(intent.action)) {
+    return runMonitorNow(env, intent.target || "");
   }
   const command = {
     check: "/check",
@@ -1654,6 +2058,7 @@ async function replyForNaturalLanguageIntent(intent, env) {
       env.BROWSER,
       env.AI,
       env.MONITOR_DB,
+      env,
     );
   }
   return intent.reply || helpMessage();
@@ -1969,13 +2374,41 @@ async function runSourceMonitor(env, {
   sendDailyHeartbeat = true,
   errorNotificationCounts = [1, 3, 6],
   recoveryNotificationMinimumErrors = 1,
+  maxAttempts = 2,
+  circuitCooldownMs = 30 * 60 * 1000,
+  force = false,
 }) {
   const original = await loadMonitorState(env, source);
   const previousErrorCount = original.consecutiveErrors;
   const nowIso = new Date().toISOString();
+  const circuit = circuitStatus(original, new Date(nowIso), {
+    cooldownMs: circuitCooldownMs,
+  });
+  if (!force && circuit.open) {
+    console.log(`${sourceName} 監控冷卻中，預計 ${circuit.retryAt} 重試`);
+    return {
+      ok: true,
+      skipped: true,
+      circuitOpen: true,
+      retryAt: circuit.retryAt,
+      eventCount: 0,
+    };
+  }
 
   try {
-    const snapshot = await fetchSnapshot(fetch);
+    const snapshot = await runWithRetry(
+      async () => validateSnapshot(await fetchSnapshot(fetch)),
+      {
+        maxAttempts,
+        onRetry(error, nextAttempt) {
+          console.warn(
+            `${sourceName} 自動重試第 ${nextAttempt} 次：${
+              error instanceof Error ? error.message : "未知錯誤"
+            }`,
+          );
+        },
+      },
+    );
     const result = applyInventory(
       original,
       snapshot.targetProducts,
@@ -2051,6 +2484,7 @@ async function runSourceMonitor(env, {
     }
     const message =
       error instanceof Error ? error.message : "未知監控錯誤";
+    const errorKind = classifyMonitorError(error);
     const result = applyMonitorError(original, message, nowIso, {
       label,
       notifyAt: errorNotificationCounts,
@@ -2074,17 +2508,180 @@ async function runSourceMonitor(env, {
     return {
       ok: false,
       error: message,
+      errorKind,
       eventCount: result.events.length,
     };
   }
 }
 
-export async function runScheduledMonitor(env) {
-  const targets = await loadMonitorTargets(env.MONITOR_DB);
-  const enabledIds = new Set(
-    targets.filter((target) => target.enabled).map((target) => target.id),
-  );
-  const definitions = [
+async function loadGenericMonitorState(env, targetId) {
+  const row = await env.MONITOR_DB.prepare(
+    `SELECT version, initialized, products_json, consecutive_errors,
+      last_heartbeat_date, last_run_at, last_success_at, last_error
+    FROM generic_monitor_state
+    WHERE target_id = ?`,
+  ).bind(targetId).first();
+  if (!row) return emptyMonitorState();
+  return {
+    version: Number(row.version),
+    initialized: Boolean(row.initialized),
+    products: JSON.parse(row.products_json),
+    consecutiveErrors: Number(row.consecutive_errors),
+    lastHeartbeatDate: row.last_heartbeat_date,
+    lastRunAt: row.last_run_at,
+    lastSuccessAt: row.last_success_at,
+    lastError: row.last_error,
+  };
+}
+
+async function persistGenericMonitorResult(
+  env,
+  targetId,
+  state,
+  {
+    status,
+    snapshot = null,
+    eventCount = 0,
+    errorMessage = null,
+  },
+) {
+  await env.MONITOR_DB.batch([
+    env.MONITOR_DB.prepare(
+      `INSERT INTO generic_monitor_state (
+        target_id, version, initialized, products_json,
+        consecutive_errors, last_heartbeat_date, last_run_at,
+        last_success_at, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(target_id) DO UPDATE SET
+        version = excluded.version,
+        initialized = excluded.initialized,
+        products_json = excluded.products_json,
+        consecutive_errors = excluded.consecutive_errors,
+        last_heartbeat_date = excluded.last_heartbeat_date,
+        last_run_at = excluded.last_run_at,
+        last_success_at = excluded.last_success_at,
+        last_error = excluded.last_error`,
+    ).bind(
+      targetId,
+      state.version,
+      state.initialized ? 1 : 0,
+      JSON.stringify(state.products),
+      state.consecutiveErrors,
+      state.lastHeartbeatDate,
+      state.lastRunAt,
+      state.lastSuccessAt,
+      state.lastError,
+    ),
+    env.MONITOR_DB.prepare(
+      `INSERT INTO generic_monitor_runs (
+        target_id, ran_at, status, target_product_count,
+        event_count, error_message
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      targetId,
+      state.lastRunAt,
+      status,
+      snapshot?.targetProducts.length ?? null,
+      eventCount,
+      errorMessage,
+    ),
+    env.MONITOR_DB.prepare(
+      `DELETE FROM generic_monitor_runs
+      WHERE target_id = ? AND id NOT IN (
+        SELECT id FROM generic_monitor_runs
+        WHERE target_id = ? ORDER BY id DESC LIMIT 2016
+      )`,
+    ).bind(targetId, targetId),
+  ]);
+}
+
+async function runGenericTargetMonitor(env, target, { force = false } = {}) {
+  const original = await loadGenericMonitorState(env, target.id);
+  const previousErrors = original.consecutiveErrors;
+  const nowIso = new Date().toISOString();
+  const circuit = circuitStatus(original, new Date(nowIso));
+  if (!force && circuit.open) {
+    return {
+      ok: true,
+      skipped: true,
+      circuitOpen: true,
+      retryAt: circuit.retryAt,
+      eventCount: 0,
+    };
+  }
+  try {
+    const snapshot = await runWithRetry(
+      async () => {
+        const { product } = await fetchGenericProductPreview(
+          target.sourceUrl,
+          fetch,
+        );
+        return validateSnapshot(
+          genericProductSnapshot(product, target.id),
+        );
+      },
+      {
+        maxAttempts: 2,
+        onRetry(error, nextAttempt) {
+          console.warn(
+            `${target.label} 自動重試第 ${nextAttempt} 次：${
+              error instanceof Error ? error.message : "未知錯誤"
+            }`,
+          );
+        },
+      },
+    );
+    const result = applyInventory(
+      original,
+      snapshot.targetProducts,
+      nowIso,
+      { label: target.label },
+    );
+    const events = filterInventoryEvents(
+      result.events,
+      target.config.notification_events ?? [
+        "new", "restock", "price_drop", "removed",
+      ],
+    );
+    const recovered = recoveryEvent(previousErrors, {
+      label: target.label,
+      source: new URL(target.sourceUrl).hostname,
+      minimumErrorCount: 3,
+    });
+    if (recovered) events.unshift(recovered);
+    await sendMonitorEvents(env, events);
+    result.state.lastRunAt = nowIso;
+    result.state.lastSuccessAt = nowIso;
+    await persistGenericMonitorResult(env, target.id, result.state, {
+      status: "success",
+      snapshot,
+      eventCount: events.length,
+    });
+    return { ok: true, snapshot, eventCount: events.length };
+  } catch (error) {
+    if (error instanceof NotificationError) throw error;
+    const message = error instanceof Error ? error.message : "未知監控錯誤";
+    const result = applyMonitorError(original, message, nowIso, {
+      label: target.label,
+      notifyAt: [3, 6],
+    });
+    await sendMonitorEvents(env, result.events);
+    await persistGenericMonitorResult(env, target.id, result.state, {
+      status: "error",
+      eventCount: result.events.length,
+      errorMessage: message,
+    });
+    return {
+      ok: false,
+      error: message,
+      errorKind: classifyMonitorError(error),
+      eventCount: result.events.length,
+    };
+  }
+}
+
+function fixedMonitorDefinitions(env) {
+  return [
     {
       targetId: MONITOR_TARGET_IDS.apple,
       source: "apple",
@@ -2127,17 +2724,37 @@ export async function runScheduledMonitor(env) {
       recoveryNotificationMinimumErrors: 3,
     },
   ];
+}
+
+export async function runScheduledMonitor(env) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB);
+  const enabledIds = new Set(
+    targets.filter((target) => target.enabled).map((target) => target.id),
+  );
+  const definitions = fixedMonitorDefinitions(env);
   const results = await Promise.all(definitions.map((definition) =>
     enabledIds.has(definition.targetId)
       ? runSourceMonitor(env, definition)
       : Promise.resolve({ ok: true, skipped: true, eventCount: 0 })
   ));
+  const genericTargets = targets.filter(
+    (target) =>
+      target.enabled &&
+      !target.archivedAt &&
+      target.adapterKey === "generic-jsonld",
+  );
+  const genericResults = await Promise.all(
+    genericTargets.map((target) => runGenericTargetMonitor(env, target)),
+  );
   return {
-    ok: results.every((result) => result.ok),
+    ok:
+      results.every((result) => result.ok) &&
+      genericResults.every((result) => result.ok),
     apple: results[0],
     costco: results[1],
     pchome: results[2],
     coupang: results[3],
+    generic: genericResults,
   };
 }
 
@@ -2162,6 +2779,66 @@ export async function runSonyScheduledMonitor(env) {
     errorNotificationCounts: [3, 6],
     recoveryNotificationMinimumErrors: 3,
   });
+}
+
+async function runMonitorNow(env, argument) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB, {
+    includeArchived: false,
+  });
+  const target = findMonitorTarget(
+    targets.filter((item) => item.enabled),
+    argument,
+  );
+  if (!target) {
+    return [
+      `找不到唯一且啟用中的「${argument || "未指定"}」。`,
+      "請先用 /targets 查看名稱，再傳送 /retry 目標。",
+    ].join("\n");
+  }
+  let result;
+  if (target.adapterKey === "generic-jsonld") {
+    result = await runGenericTargetMonitor(env, target, { force: true });
+  } else if (target.id === MONITOR_TARGET_IDS.sony) {
+    result = await runSourceMonitor(env, {
+      source: "sony",
+      label: "酷澎 Sony WH-1000XM6",
+      sourceName: "酷澎 Sony",
+      purchaseUrl: COUPANG_SONY_SEARCH_URL,
+      fetchSnapshot: () =>
+        fetchCoupangSonyInventory(env.BROWSER, env.AI),
+      formatSummary: formatCoupangSonySummary,
+      inventoryEventKinds: ["price_drop"],
+      sendDailyHeartbeat: false,
+      errorNotificationCounts: [3, 6],
+      recoveryNotificationMinimumErrors: 3,
+      force: true,
+    });
+  } else {
+    const definition = fixedMonitorDefinitions(env).find(
+      (item) => item.targetId === target.id,
+    );
+    if (!definition) {
+      return `⚠️ ${target.label} 尚未連接可執行的監控 adapter。`;
+    }
+    result = await runSourceMonitor(env, {
+      ...definition,
+      force: true,
+    });
+  }
+  if (result.ok) {
+    return [
+      `✅ 已完成重試：${target.label}`,
+      result.skipped ? "本次未執行。" : "已取得並驗證可信資料。",
+      `通知事件：${result.eventCount ?? 0} 則`,
+    ].join("\n");
+  }
+  return [
+    `⚠️ 重試仍失敗：${target.label}`,
+    `類型：${result.errorKind ?? "unknown"}`,
+    result.error || "未知錯誤",
+    "",
+    "最後可信資料已保留，系統不會把這次錯誤當成下架。",
+  ].join("\n");
 }
 
 async function handleTelegramUpdate(update, env) {
@@ -2202,6 +2879,7 @@ async function handleTelegramUpdate(update, env) {
           env.BROWSER,
           env.AI,
           env.MONITOR_DB,
+          env,
         )
       : await replyForNaturalLanguage(message.text, env);
   } catch (error) {
