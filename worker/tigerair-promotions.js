@@ -3,10 +3,8 @@ export const TIGERAIR_HOME_URL =
 export const TIGERAIR_BANNERS_API_URL =
   "https://api-cms.tigerairtw.com/api/home-banners?language=zh-TW&perPage=100";
 
-const OFFER_TERMS =
-  /機票|票價|航線|購票|促銷|優惠|特惠|開賣|快閃|折扣|未稅/i;
-const STRONG_FARE_TERMS =
-  /機票|票價|航線|購票|促銷|特惠|開賣|快閃|未稅|全航線/i;
+const PROMOTION_TERMS =
+  /促銷|優惠|特惠|開賣|快閃|折扣|未稅|(?:TWD|NT\$?)\s*[\d,]+\s*起|\d+(?:\.\d+)?\s*折|票價.*起|機票.*(?:起|優惠)/i;
 const EXCLUDED_TERMS =
   /飯店|公寓|藥妝|接送|行李特工|eSIM|wifi|免稅品/i;
 
@@ -207,7 +205,7 @@ export function parseTigerairHomepage(html) {
     if (
       !row.text ||
       EXCLUDED_TERMS.test(row.text) ||
-      !OFFER_TERMS.test(row.text) ||
+      !PROMOTION_TERMS.test(row.text) ||
       (!isOfficialNews && !isOfficialBookingOffer)
     ) {
       continue;
@@ -272,11 +270,11 @@ export function parseTigerairPromotionDetail(html, pageUrl) {
   const description =
     metaContent(html, "og:description") ||
     metaContent(html, "description");
-  const evidence = `${title} ${description} ${normalizeText(html).slice(0, 3000)}`;
+  const evidence = `${title} ${description}`;
   if (
     !title ||
     EXCLUDED_TERMS.test(`${title} ${description}`) ||
-    !STRONG_FARE_TERMS.test(evidence)
+    !PROMOTION_TERMS.test(evidence)
   ) {
     return null;
   }

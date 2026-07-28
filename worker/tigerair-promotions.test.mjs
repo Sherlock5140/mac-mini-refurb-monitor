@@ -131,10 +131,15 @@ test("verifies the latest official fare detail and rejects non-fare events", () 
     "<title>日本品牌大使分享會</title>",
     "https://static.tigerairtw.com/www/events/2606ambassador/",
   );
+  const routeLaunch = parseTigerairPromotionDetail(
+    "<title>台虎直飛小松 每週各 2 班</title><meta name=\"description\" content=\"全新航線正式啟航\">",
+    "https://static.tigerairtw.com/www/events/2607KMQ/",
+  );
 
   assert.match(promotion.name, /1,199/);
   assert.match(promotion.description, /7\/29/);
   assert.equal(rejected, null);
+  assert.equal(routeLaunch, null);
 });
 
 test("builds a quiet baseline then emits only new or changed offers", () => {
