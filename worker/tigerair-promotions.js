@@ -332,11 +332,20 @@ function clone(value) {
 }
 
 function notification(kind, item) {
+  const priorityRoute = isPriorityTigerairRoute(item);
   return {
     kind,
-    title: kind === "promotion_updated"
-      ? "🐯 虎航優惠公告更新"
-      : "🐯 虎航新優惠公告",
+    title: priorityRoute
+      ? (
+          kind === "promotion_updated"
+            ? "🚨 高雄－金浦虎航優惠更新"
+            : "🚨 高雄－金浦虎航新優惠"
+        )
+      : (
+          kind === "promotion_updated"
+            ? "🐯 虎航優惠公告更新"
+            : "🐯 虎航新優惠公告"
+        ),
     message: formatTigerairPromotionMessage(item),
     url: item.url,
     disablePreview: false,
@@ -583,10 +592,33 @@ function tigerairFareAndRoute(item) {
   const price = evidence.match(
     /(?:TWD|NT\$?)\s*[\d,]+(?:\s*元)?(?:\s*起)?/i,
   )?.[0];
-  const route = /全航線/.test(evidence)
-    ? "全航線"
-    : "活動指定航線";
+  const route = isPriorityTigerairRoute(item)
+    ? "高雄－首爾（金浦）"
+    : (
+        /全航線/.test(evidence)
+          ? "全航線"
+          : "活動指定航線"
+      );
   return [price || "票價以官方公告為準", route].join("／");
+}
+
+export function isPriorityTigerairRoute(item) {
+  const evidence = normalizeText(
+    `${item?.name ?? ""} ${item?.description ?? ""}`,
+  );
+  const hasKaohsiung =
+    /高雄|KHH|Kaohsiung/i.test(evidence);
+  const explicitlyIncheon =
+    /仁川|ICN|Incheon/i.test(evidence);
+  const hasGimpo =
+    /金浦|GMP/i.test(evidence);
+  const hasSeoul =
+    /首爾|首尔|Seoul/i.test(evidence);
+  return (
+    hasKaohsiung &&
+    !explicitlyIncheon &&
+    (hasGimpo || hasSeoul)
+  );
 }
 
 export function formatTigerairPromotionMessage(item) {
@@ -671,6 +703,7 @@ export function formatTigerairSummary(snapshot, verifiedAt) {
   return [
     "✈️ 台灣虎航官方優惠",
     "",
+    "重點關注：高雄－首爾（金浦／KHH–GMP）",
     `目前辨識：${snapshot.targetProducts.length} 項`,
     ...(promotions.length
       ? promotions.flatMap((item, index) => [

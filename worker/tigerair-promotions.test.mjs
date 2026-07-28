@@ -9,6 +9,7 @@ import {
   buildTigerairBaselineEvent,
   formatTigerairPromotionMessage,
   formatTigerairTaipeiTime,
+  isPriorityTigerairRoute,
   parseTigerairBannerFeed,
   parseTigerairHomepage,
   parseTigerairPromotionDetail,
@@ -219,6 +220,50 @@ test("formats fare notifications as the requested compact four-line notice", () 
     "旅遊期間：2026/10/25～2027/3/27",
     "票價／航線：TWD 1,299 起／活動指定航線",
   ].join("\n"));
+});
+
+test("prioritizes Kaohsiung-Gimpo fare offers without disabling other routes", () => {
+  const priority = {
+    sku: "https://www.tigerairtw.com/zh-tw/news/khh-gmp-sale",
+    name: "高雄飛首爾金浦航線限時優惠",
+    description: "KHH–GMP 單程未稅 TWD 1,599 起",
+    details: "台灣虎航官網優惠消息",
+    url: "https://www.tigerairtw.com/zh-TW/news/khh-gmp-sale",
+    kind: "official-news",
+    fingerprint: "khh-gmp-sale",
+  };
+  const wrongAirport = {
+    ...priority,
+    name: "高雄飛首爾仁川航線限時優惠",
+    description: "KHH–ICN 單程未稅 TWD 1,599 起",
+  };
+  const ordinary = {
+    ...priority,
+    sku: "https://www.tigerairtw.com/zh-tw/news/nrt-sale",
+    name: "桃園飛東京航線限時優惠",
+    description: "TPE–NRT 單程未稅 TWD 1,599 起",
+    url: "https://www.tigerairtw.com/zh-TW/news/nrt-sale",
+    fingerprint: "nrt-sale",
+  };
+
+  assert.equal(isPriorityTigerairRoute(priority), true);
+  assert.equal(isPriorityTigerairRoute(wrongAirport), false);
+  assert.equal(isPriorityTigerairRoute(ordinary), false);
+  assert.match(
+    formatTigerairPromotionMessage(priority),
+    /票價／航線：TWD 1,599 起／高雄－首爾（金浦）/,
+  );
+
+  const state = emptyMonitorState();
+  state.initialized = true;
+  const result = applyTigerairPromotions(
+    state,
+    [priority, ordinary],
+    "2026-07-28T14:30:00.000Z",
+  );
+  assert.equal(result.events.length, 2);
+  assert.match(result.events[0].title, /高雄－金浦/);
+  assert.match(result.events[1].title, /虎航新優惠公告/);
 });
 
 test("builds a quiet baseline then emits only new or changed offers", () => {
