@@ -16,8 +16,11 @@ import {
   formatCostcoSummary,
   formatPchomeSummary,
   formatPurchaseMessage,
+  formatMonitorTargets,
   claimAiChatAllowance,
   interpretNaturalLanguage,
+  loadMonitorTargets,
+  manageMonitorTargets,
   parseAppleInventory,
   parseWithAiDiagnostics,
   parseCoupangInventory,
@@ -34,6 +37,124 @@ import {
   emptyMonitorState,
   recoveryEvent,
 } from "./monitor-state.js";
+
+function managementDbFixture() {
+  const targets = [
+    {
+      id: "apple-mac-mini",
+      label: "Apple M4 Mac mini",
+      adapter_key: "apple-refurb-mac",
+      source_url: APPLE_REFURB_URL,
+      config_json: "{}",
+      enabled: 1,
+      created_at: "2026-07-28T00:00:00.000Z",
+      updated_at: "2026-07-28T00:00:00.000Z",
+      deleted_at: null,
+    },
+    {
+      id: "coupang-sony-xm6",
+      label: "酷澎 Sony WH-1000XM6",
+      adapter_key: "coupang-browser-search",
+      source_url: COUPANG_SONY_SEARCH_URL,
+      config_json: '{"notification_events":["price_drop"]}',
+      enabled: 1,
+      created_at: "2026-07-28T00:00:00.000Z",
+      updated_at: "2026-07-28T00:00:00.000Z",
+      deleted_at: null,
+    },
+  ];
+  const requests = [];
+  const audit = [];
+
+  function statement(sql, values = []) {
+    return {
+      sql,
+      values,
+      bind(...bound) {
+        return statement(sql, bound);
+      },
+      async all() {
+        if (sql.includes("FROM monitor_targets")) {
+          const includeDeleted = !sql.includes("WHERE deleted_at IS NULL");
+          return {
+            results: targets.filter(
+              (target) => includeDeleted || !target.deleted_at,
+            ),
+          };
+        }
+        return { results: [] };
+      },
+      async first() {
+        if (sql.includes("FROM monitor_change_requests")) {
+          return requests.find(
+            (request) =>
+              request.confirmation_code === values[0] &&
+              request.status === "pending",
+          ) ?? null;
+        }
+        return null;
+      },
+    };
+  }
+
+  function apply(item) {
+    const { sql, values } = item;
+    if (sql.includes("SET enabled = ?, updated_at = ?")) {
+      const target = targets.find((entry) => entry.id === values[2]);
+      target.enabled = values[0];
+      target.updated_at = values[1];
+    } else if (
+      sql.includes("INSERT INTO monitor_change_requests")
+    ) {
+      requests.push({
+        id: requests.length + 1,
+        confirmation_code: values[0],
+        action: "remove",
+        target_id: values[1],
+        status: "pending",
+        expires_at: values[2],
+        created_at: values[3],
+      });
+    } else if (
+      sql.includes("SET status = 'expired'")
+    ) {
+      for (const request of requests) {
+        if (
+          request.target_id === values[0] &&
+          request.status === "pending"
+        ) {
+          request.status = "expired";
+        }
+      }
+    } else if (
+      sql.includes("SET enabled = 0, deleted_at = ?")
+    ) {
+      const target = targets.find((entry) => entry.id === values[2]);
+      target.enabled = 0;
+      target.deleted_at = values[0];
+      target.updated_at = values[1];
+    } else if (
+      sql.includes("SET status = 'confirmed'")
+    ) {
+      const request = requests.find((entry) => entry.id === values[1]);
+      request.status = "confirmed";
+      request.confirmed_at = values[0];
+    } else if (sql.includes("INSERT INTO monitor_audit_log")) {
+      audit.push({ sql, values });
+    }
+  }
+
+  return {
+    targets,
+    requests,
+    audit,
+    prepare: statement,
+    async batch(statements) {
+      statements.forEach(apply);
+      return [];
+    },
+  };
+}
 
 function product({
   name,
@@ -285,6 +406,61 @@ test("routes natural language through the GLM chat model", async () => {
     action: "sony",
     reply: "",
   });
+});
+
+test("routes natural-language target management without inventing URLs", async () => {
+  const intent = await interpretNaturalLanguage(
+    "先暫停 Sony 耳機監控",
+    {
+      async run() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "pause",
+                  target: "Sony",
+                  reply: "",
+                }),
+              },
+            },
+          ],
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(intent, {
+    action: "pause",
+    target: "Sony",
+    reply: "",
+  });
+});
+
+test("lists, pauses, resumes, and confirm-removes registered targets", async () => {
+  const db = managementDbFixture();
+  const initialTargets = await loadMonitorTargets(db);
+
+  assert.equal(initialTargets.length, 2);
+  assert.match(formatMonitorTargets(initialTargets), /Apple M4 Mac mini/);
+  assert.match(await manageMonitorTargets("/pause Sony", db), /已暫停/);
+  assert.equal(db.targets[1].enabled, 0);
+  assert.match(await manageMonitorTargets("/resume Sony", db), /已恢復/);
+  assert.equal(db.targets[1].enabled, 1);
+
+  const removalReply = await manageMonitorTargets("/remove Sony", db);
+  const code = removalReply.match(/\/confirm ([A-F0-9]{6})/)?.[1];
+  assert.ok(code);
+  assert.equal(db.targets[1].deleted_at, null);
+
+  const confirmationReply = await manageMonitorTargets(
+    `/confirm ${code}`,
+    db,
+  );
+  assert.match(confirmationReply, /已移除監控目標/);
+  assert.equal(db.targets[1].enabled, 0);
+  assert.ok(db.targets[1].deleted_at);
+  assert.equal(db.audit.length, 3);
 });
 
 test("tracks a conservative daily AI chat allowance", async () => {
