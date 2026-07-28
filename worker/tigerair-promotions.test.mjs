@@ -266,6 +266,36 @@ test("prioritizes Kaohsiung-Gimpo fare offers without disabling other routes", (
   assert.match(result.events[1].title, /虎航新優惠公告/);
 });
 
+test("consumes one backend Tigerair test request exactly once", () => {
+  const item = parseTigerairPromotionDetail(
+    currentPromotionHtml,
+    "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",
+  );
+  item.present = true;
+  const state = emptyMonitorState();
+  state.initialized = true;
+  state.products[item.sku] = item;
+  state.products.__backend_test__ = {
+    requestedAt: "2026-07-28T14:20:00.000Z",
+  };
+
+  const first = applyTigerairSaleOpenReminders(
+    state,
+    "2026-07-28T14:20:00.000Z",
+  );
+  const repeated = applyTigerairSaleOpenReminders(
+    first.state,
+    "2026-07-28T14:25:00.000Z",
+  );
+
+  assert.equal(first.events.length, 1);
+  assert.equal(first.events[0].kind, "backend_test");
+  assert.match(first.events[0].title, /虎航後端即時資料/);
+  assert.match(first.events[0].message, /票價／航線：/);
+  assert.equal(first.state.products.__backend_test__, undefined);
+  assert.equal(repeated.events.length, 0);
+});
+
 test("builds a quiet baseline then emits only new or changed offers", () => {
   const snapshot = tigerairSnapshot(homepageHtml, [{
     url: "https://www.tigerairtw.com/zh-TW/EVENTS/2607tigeresg/",

@@ -645,6 +645,35 @@ export function applyTigerairSaleOpenReminders(
   const updated = clone(state);
   updated.products ??= {};
   const events = [];
+  const backendTestRequest =
+    updated.products.__backend_test__;
+  if (backendTestRequest?.requestedAt) {
+    delete updated.products.__backend_test__;
+    const currentPromotions = Object.values(updated.products)
+      .filter((item) =>
+        item &&
+        item.present !== false &&
+        item.name &&
+        item.url
+      )
+      .slice(0, 3);
+    if (currentPromotions.length) {
+      events.push({
+        kind: "backend_test",
+        title: "🐯 虎航後端即時資料",
+        message: [
+          "Cloudflare 後端主動推送測試",
+          "",
+          ...currentPromotions.flatMap((item, index) => [
+            ...(index ? [""] : []),
+            formatTigerairPromotionMessage(item),
+          ]),
+        ].join("\n"),
+        url: currentPromotions[0].url,
+        disablePreview: false,
+      });
+    }
+  }
   const now = Date.parse(nowIso);
   if (Number.isNaN(now)) {
     throw new Error("虎航開賣提醒檢查時間無效");
