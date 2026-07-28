@@ -1157,7 +1157,7 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /酷澎 排程：等待第一次執行/);
   assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
   assert.match(reply, /台灣虎航 排程：等待第一次執行/);
-  assert.match(reply, /Sony 耳機價格/);
+  assert.match(reply, /商品與台灣虎航官方優惠/);
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
