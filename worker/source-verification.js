@@ -76,10 +76,19 @@ const SOURCE_REGISTRY = Object.freeze({
   chatgptPromo: {
     label: "GitHub 公開專案（社群情報）",
     allowedHosts: ["github.com"],
-    method: "GitHub 公開版本紀錄；不執行掃描器",
+    method: "GitHub 公開 JSON 清單＋確定性解析；不執行掃描器",
     matchesUrl(url) {
       return url.pathname.replace(/\/+$/, "").toLowerCase() ===
         "/juk1-gh/gpt-promo-scanner";
+    },
+  },
+  doctorOfCredit: {
+    label: "Doctor of Credit 公開文章（第三方）",
+    allowedHosts: ["www.doctorofcredit.com"],
+    method: "公開 WordPress API＋確定性解析",
+    matchesUrl(url) {
+      return `${url.pathname.replace(/\/+$/, "")}/`.toLowerCase() ===
+        "/chatgpt-get-two-business-seats-for-price-of-one-with-promo-code-infoseekaius-free-with-amex/";
     },
   },
 });

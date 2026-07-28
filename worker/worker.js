@@ -35,14 +35,23 @@ import {
   withTigerairSaleSchedule,
 } from "./tigerair-promotions.js";
 import {
-  CHATGPT_PROMO_COMMITS_API_URL,
+  CHATGPT_PROMO_CATALOG_URL,
   CHATGPT_PROMO_REPO_URL,
   applyChatgptPromoUpdates,
-  assertChatgptPromoCommitsApiUrl,
+  assertChatgptPromoCatalogUrl,
   buildChatgptPromoBaselineEvent,
   formatChatgptPromoSummary,
-  parseChatgptPromoCommit,
+  parseChatgptPromoCatalog,
 } from "./chatgpt-promotions.js";
+import {
+  DOCTOR_OF_CREDIT_API_URL,
+  DOCTOR_OF_CREDIT_PROMO_URL,
+  applyDoctorOfCreditUpdates,
+  assertDoctorOfCreditApiUrl,
+  buildDoctorOfCreditBaselineEvent,
+  formatDoctorOfCreditSummary,
+  parseDoctorOfCreditPromotion,
+} from "./doctor-of-credit-promotions.js";
 
 const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
@@ -66,6 +75,8 @@ const TIGERAIR_MONITOR_CRON =
   "4,34 * * * *";
 const CHATGPT_PROMO_MONITOR_CRON =
   "14,44 * * * *";
+const DOCTOR_OF_CREDIT_MONITOR_CRON =
+  "19,49 * * * *";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const AI_DIAGNOSTIC_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const AI_CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -97,6 +108,7 @@ const AI_CHAT_ACTIONS = new Set([
   "sources",
   "tigerair",
   "gptpromo",
+  "docpromo",
 ]);
 const AI_DIAGNOSTIC_STATES = new Set([
   "blocked",
@@ -134,6 +146,10 @@ const SOURCE_TABLES = {
     state: "chatgpt_promo_monitor_state",
     runs: "chatgpt_promo_monitor_runs",
   },
+  doctorOfCredit: {
+    state: "doctor_of_credit_monitor_state",
+    runs: "doctor_of_credit_monitor_runs",
+  },
 };
 const MONITOR_TARGET_IDS = {
   apple: "apple-mac-mini",
@@ -143,6 +159,7 @@ const MONITOR_TARGET_IDS = {
   sony: "coupang-sony-xm6",
   tigerair: "tigerair-promotions",
   chatgptPromo: "chatgpt-business-promo-updates",
+  doctorOfCredit: "doctor-of-credit-chatgpt-promo",
 };
 
 const DEVICE_FAMILIES = [
@@ -211,6 +228,9 @@ function aiResponseText(result) {
 
 function targetNameFromNaturalLanguage(text) {
   const normalized = normalizeText(text).toLowerCase();
+  if (/doctor\s*of\s*credit|doctorofcredit/i.test(normalized)) {
+    return "Doctor of Credit";
+  }
   if (
     /chatgpt.*(?:business|team).*(?:promo|優惠碼|折扣碼)|(?:promo|優惠碼|折扣碼).*chatgpt/i
       .test(normalized)
@@ -289,6 +309,12 @@ export function deterministicNaturalLanguageIntent(text) {
     return { action: "status" };
   }
   if (
+    /doctor\s*of\s*credit|doctorofcredit/i.test(lowered) &&
+    /chatgpt|business|promo|優惠碼|折扣碼|促銷碼|優惠|折扣/i.test(normalized)
+  ) {
+    return { action: "docpromo" };
+  }
+  if (
     /chatgpt/i.test(lowered) &&
     /business|team|promo|優惠碼|折扣碼|促銷碼|優惠|折扣/i.test(normalized)
   ) {
@@ -334,7 +360,7 @@ export async function interpretNaturalLanguage(text, ai) {
         role: "system",
         content: [
           "你是私人商品與優惠監控 Telegram 助手，使用繁體中文簡短回答。",
-          "將使用者意圖分類成 check、costco、pchome、coupang、sony、tigerair、gptpromo、",
+          "將使用者意圖分類成 check、costco、pchome、coupang、sony、tigerair、gptpromo、docpromo、",
           "buy、status、help 或 chat。需要即時商品、價格或狀態時必須",
           "選擇對應工具，禁止自行猜測。管理意圖使用 targets、pause、",
           "resume、remove、archive、trash、restore、add、errors、diagnose、",
@@ -1279,7 +1305,8 @@ function helpMessage() {
     "/coupang－立即查詢酷澎庫存、價格與購買連結",
     "/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格",
     "/tigerair－立即查詢台灣虎航官方優惠",
-    "/gptpromo－查詢 ChatGPT Business 公開優惠情報",
+    "/gptpromo [地區碼]－查詢 ChatGPT Business 公開優惠清單",
+    "/docpromo－查詢 Doctor of Credit 指定優惠文章",
     "/buy－列出符合條件的商品與購買連結",
     "/status－確認所有商品與購物站的排程狀態",
     "/targets－列出目前監控目標",
@@ -1786,15 +1813,12 @@ async function fetchChatgptPromoUpdates(fetchImpl = fetch) {
     "chatgptPromo",
     CHATGPT_PROMO_REPO_URL,
   );
-  assertChatgptPromoCommitsApiUrl(
-    CHATGPT_PROMO_COMMITS_API_URL,
-  );
+  assertChatgptPromoCatalogUrl(CHATGPT_PROMO_CATALOG_URL);
   const response = await fetchImpl(
-    CHATGPT_PROMO_COMMITS_API_URL,
+    CHATGPT_PROMO_CATALOG_URL,
     {
       headers: {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
+        Accept: "application/json",
         "User-Agent":
           "personal-public-update-monitor/1.0",
       },
@@ -1806,23 +1830,60 @@ async function fetchChatgptPromoUpdates(fetchImpl = fetch) {
   );
   if (!response.ok) {
     throw new Error(
-      `GitHub 公開優惠情報 HTTP ${response.status}`,
+      `GitHub 公開優惠清單 HTTP ${response.status}`,
     );
   }
-  assertChatgptPromoCommitsApiUrl(
-    response.url || CHATGPT_PROMO_COMMITS_API_URL,
+  assertChatgptPromoCatalogUrl(
+    response.url || CHATGPT_PROMO_CATALOG_URL,
   );
   const text = await response.text();
   if (text.length > 250_000) {
-    throw new Error("GitHub 公開優惠情報回應過大");
+    throw new Error("GitHub 公開優惠清單回應過大");
   }
   let payload;
   try {
     payload = JSON.parse(text);
   } catch {
-    throw new Error("GitHub 公開優惠情報 JSON 格式錯誤");
+    throw new Error("GitHub 公開優惠清單 JSON 格式錯誤");
   }
-  return parseChatgptPromoCommit(payload);
+  return parseChatgptPromoCatalog(payload);
+}
+
+async function fetchDoctorOfCreditPromotion(fetchImpl = fetch) {
+  assertVerifiedSourceUrl(
+    "doctorOfCredit",
+    DOCTOR_OF_CREDIT_PROMO_URL,
+  );
+  assertDoctorOfCreditApiUrl(DOCTOR_OF_CREDIT_API_URL);
+  const response = await fetchImpl(DOCTOR_OF_CREDIT_API_URL, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "personal-public-update-monitor/1.0",
+    },
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 60,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Doctor of Credit 公開 API HTTP ${response.status}`,
+    );
+  }
+  assertDoctorOfCreditApiUrl(
+    response.url || DOCTOR_OF_CREDIT_API_URL,
+  );
+  const text = await response.text();
+  if (text.length > 500_000) {
+    throw new Error("Doctor of Credit 公開 API 回應過大");
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error("Doctor of Credit 公開 API JSON 格式錯誤");
+  }
+  return parseDoctorOfCreditPromotion(payload);
 }
 
 function scheduleStatusLine(label, monitor) {
@@ -1856,6 +1917,7 @@ function formatMonitorDiagnostics(status, targetName = "") {
     ["酷澎 Sony", status?.sony],
     ["台灣虎航優惠", status?.tigerair],
     ["ChatGPT Business 優惠情報", status?.chatgptPromo],
+    ["Doctor of Credit 優惠文章", status?.doctorOfCredit],
   ].filter(([label]) =>
     !targetName ||
     normalizeText(label).toLowerCase().includes(
@@ -1955,6 +2017,9 @@ function findMonitorTarget(targets, query) {
     chatgpt: "chatgpt-business-promo-updates",
     "chatgpt-business": "chatgpt-business-promo-updates",
     優惠碼: "chatgpt-business-promo-updates",
+    docpromo: "doctor-of-credit-chatgpt-promo",
+    doctorofcredit: "doctor-of-credit-chatgpt-promo",
+    "doctor-of-credit": "doctor-of-credit-chatgpt-promo",
   };
   const aliasId = aliases[key];
   const exact = targets.find((target) =>
@@ -2416,6 +2481,11 @@ export async function replyForCommand(
         monitor?.chatgptPromo,
       ),
       "",
+      scheduleStatusLine(
+        "Doctor of Credit 優惠文章",
+        monitor?.doctorOfCredit,
+      ),
+      "",
       "自動監控：商品每 5 分鐘；虎航與公開優惠情報每 30 分鐘。",
       "虎航開賣提醒：每 5 分鐘檢查已保存的開賣時間。",
       ...(ai?.run
@@ -2464,8 +2534,19 @@ export async function replyForCommand(
     );
   }
   if (command === "/gptpromo") {
+    const region = normalizeText(text)
+      .split(/\s+/)
+      .slice(1)
+      .join(" ");
     return formatChatgptPromoSummary(
       await fetchChatgptPromoUpdates(fetchImpl),
+      taipeiTime(),
+      region,
+    );
+  }
+  if (command === "/docpromo") {
+    return formatDoctorOfCreditSummary(
+      await fetchDoctorOfCreditPromotion(fetchImpl),
       taipeiTime(),
     );
   }
@@ -2535,6 +2616,7 @@ async function replyForNaturalLanguageIntent(intent, env) {
     sony: "/sony",
     tigerair: "/tigerair",
     gptpromo: "/gptpromo",
+    docpromo: "/docpromo",
     buy: "/buy",
     status: "/status",
     help: "/help",
@@ -2906,6 +2988,7 @@ async function monitorStatus(env) {
     sony,
     tigerair,
     chatgptPromo,
+    doctorOfCredit,
     targets,
   ] = await Promise.all([
     loadMonitorState(env, "apple"),
@@ -2915,6 +2998,7 @@ async function monitorStatus(env) {
     loadMonitorState(env, "sony"),
     loadMonitorState(env, "tigerair"),
     loadMonitorState(env, "chatgptPromo"),
+    loadMonitorState(env, "doctorOfCredit"),
     loadMonitorTargets(env.MONITOR_DB),
   ]);
   const enabledById = new Map(
@@ -2932,6 +3016,8 @@ async function monitorStatus(env) {
     sony: withEnabled("sony", sony),
     tigerair: withEnabled("tigerair", tigerair),
     chatgptPromo: withEnabled("chatgptPromo", chatgptPromo),
+    doctorOfCredit:
+      withEnabled("doctorOfCredit", doctorOfCredit),
   };
 }
 
@@ -3235,7 +3321,7 @@ async function runChatgptPromoMonitor(
     );
     const result = applyChatgptPromoUpdates(
       original,
-      snapshot.targetProducts,
+      snapshot,
       nowIso,
     );
     const events = [...result.events];
@@ -3246,7 +3332,7 @@ async function runChatgptPromoMonitor(
     }
     const recovered = recoveryEvent(previousErrors, {
       label: "ChatGPT Business 優惠情報",
-      source: "GitHub 公開版本紀錄",
+      source: "GitHub 公開優惠清單",
       minimumErrorCount: 3,
     });
     if (recovered) events.unshift(recovered);
@@ -3266,7 +3352,8 @@ async function runChatgptPromoMonitor(
     });
     console.log(
       `ChatGPT Business 優惠情報監控成功：` +
-      `版本 ${snapshot.targetProducts.length}，事件 ${events.length}`,
+      `有效 ${snapshot.validCount}，失效 ${snapshot.expiredCount}，` +
+      `事件 ${events.length}`,
     );
     return {
       ok: true,
@@ -3289,6 +3376,101 @@ async function runChatgptPromoMonitor(
     attachVerifiedSource(result.events, {
       source,
       sourceUrl: CHATGPT_PROMO_REPO_URL,
+    });
+    await sendMonitorEvents(env, result.events);
+    await persistMonitorResult(env, result.state, {
+      status: "error",
+      eventCount: result.events.length,
+      errorMessage: message,
+      source,
+    });
+    return {
+      ok: false,
+      error: message,
+      errorKind: classifyMonitorError(error),
+      eventCount: result.events.length,
+    };
+  }
+}
+
+async function runDoctorOfCreditMonitor(
+  env,
+  { force = false } = {},
+) {
+  const source = "doctorOfCredit";
+  const original = await loadMonitorState(env, source);
+  const previousErrors = original.consecutiveErrors;
+  const nowIso = new Date().toISOString();
+  const circuit = circuitStatus(original, new Date(nowIso));
+  if (!force && circuit.open) {
+    return {
+      ok: true,
+      skipped: true,
+      circuitOpen: true,
+      retryAt: circuit.retryAt,
+      eventCount: 0,
+    };
+  }
+
+  try {
+    const snapshot = await runWithRetry(
+      () => fetchDoctorOfCreditPromotion(fetch),
+      { maxAttempts: 2 },
+    );
+    const result = applyDoctorOfCreditUpdates(
+      original,
+      snapshot,
+      nowIso,
+    );
+    const events = [...result.events];
+    if (!original.initialized) {
+      events.push(buildDoctorOfCreditBaselineEvent(snapshot));
+    }
+    const recovered = recoveryEvent(previousErrors, {
+      label: "Doctor of Credit 優惠文章",
+      source: "Doctor of Credit 公開 WordPress API",
+      minimumErrorCount: 3,
+    });
+    if (recovered) events.unshift(recovered);
+
+    attachVerifiedSource(events, {
+      source,
+      sourceUrl: DOCTOR_OF_CREDIT_PROMO_URL,
+    });
+    await sendMonitorEvents(env, events);
+    result.state.lastRunAt = nowIso;
+    result.state.lastSuccessAt = nowIso;
+    await persistMonitorResult(env, result.state, {
+      status: "success",
+      snapshot,
+      eventCount: events.length,
+      source,
+    });
+    console.log(
+      `Doctor of Credit 優惠文章監控成功：` +
+      `狀態 ${snapshot.article.status}，事件 ${events.length}`,
+    );
+    return {
+      ok: true,
+      snapshot,
+      eventCount: events.length,
+    };
+  } catch (error) {
+    if (error instanceof NotificationError) throw error;
+    const message =
+      error instanceof Error ? error.message : "未知監控錯誤";
+    const result = applyMonitorError(
+      original,
+      message,
+      nowIso,
+      {
+        label: "Doctor of Credit 優惠文章",
+        notifyAt: [3, 6],
+      },
+    );
+    attachVerifiedSource(result.events, {
+      source,
+      sourceUrl: DOCTOR_OF_CREDIT_PROMO_URL,
     });
     await sendMonitorEvents(env, result.events);
     await persistMonitorResult(env, result.state, {
@@ -3626,6 +3808,18 @@ export async function runChatgptPromoScheduledMonitor(env) {
   return runChatgptPromoMonitor(env);
 }
 
+export async function runDoctorOfCreditScheduledMonitor(env) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB);
+  const target = targets.find(
+    (item) =>
+      item.id === MONITOR_TARGET_IDS.doctorOfCredit,
+  );
+  if (!target?.enabled) {
+    return { ok: true, skipped: true, eventCount: 0 };
+  }
+  return runDoctorOfCreditMonitor(env);
+}
+
 export async function runTigerairSaleOpenReminders(env) {
   const targets = await loadMonitorTargets(env.MONITOR_DB);
   const target = targets.find(
@@ -3677,6 +3871,12 @@ async function runMonitorNow(env, argument) {
     target.id === MONITOR_TARGET_IDS.chatgptPromo
   ) {
     result = await runChatgptPromoMonitor(env, {
+      force: true,
+    });
+  } else if (
+    target.id === MONITOR_TARGET_IDS.doctorOfCredit
+  ) {
+    result = await runDoctorOfCreditMonitor(env, {
       force: true,
     });
   } else if (target.id === MONITOR_TARGET_IDS.sony) {
@@ -3779,6 +3979,7 @@ async function handleTelegramUpdate(update, env) {
       "/sony": COUPANG_SONY_SEARCH_URL,
       "/tigerair": TIGERAIR_HOME_URL,
       "/gptpromo": CHATGPT_PROMO_REPO_URL,
+      "/docpromo": DOCTOR_OF_CREDIT_PROMO_URL,
     }[command] ?? APPLE_REFURB_URL;
     reply = [
       "⚠️ 即時查詢暫時失敗",
@@ -3890,6 +4091,10 @@ export default {
       controller.cron === CHATGPT_PROMO_MONITOR_CRON
     ) {
       task = runChatgptPromoScheduledMonitor(env);
+    } else if (
+      controller.cron === DOCTOR_OF_CREDIT_MONITOR_CRON
+    ) {
+      task = runDoctorOfCreditScheduledMonitor(env);
     } else {
       task = Promise.all([
         runScheduledMonitor(env),
@@ -3910,6 +4115,8 @@ export {
   SONY_MONITOR_CRON,
   CHATGPT_PROMO_MONITOR_CRON,
   CHATGPT_PROMO_REPO_URL,
+  DOCTOR_OF_CREDIT_MONITOR_CRON,
+  DOCTOR_OF_CREDIT_PROMO_URL,
   TIGERAIR_HOME_URL,
   TIGERAIR_MONITOR_CRON,
 };

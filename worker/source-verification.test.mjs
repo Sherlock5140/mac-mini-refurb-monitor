@@ -36,6 +36,13 @@ test("accepts exact registered official hosts", () => {
     ).hostname,
     "github.com",
   );
+  assert.equal(
+    assertVerifiedSourceUrl(
+      "doctorOfCredit",
+      "https://www.doctorofcredit.com/chatgpt-get-two-business-seats-for-price-of-one-with-promo-code-infoseekaius-free-with-amex/",
+    ).hostname,
+    "www.doctorofcredit.com",
+  );
 });
 
 test("rejects lookalike, insecure, and unregistered sources", () => {
@@ -64,6 +71,13 @@ test("rejects lookalike, insecure, and unregistered sources", () => {
     () => assertVerifiedSourceUrl(
       "chatgptPromo",
       "https://github.com/JUk1-GH/gpt-promo-scanner-fake",
+    ),
+    /頁面指紋不符/,
+  );
+  assert.throws(
+    () => assertVerifiedSourceUrl(
+      "doctorOfCredit",
+      "https://www.doctorofcredit.com/another-chatgpt-deal/",
     ),
     /頁面指紋不符/,
   );

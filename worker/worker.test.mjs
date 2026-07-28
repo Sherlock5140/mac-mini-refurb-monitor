@@ -4,11 +4,12 @@ import test from "node:test";
 import {
   APPLE_REFURB_URL,
   CHATGPT_PROMO_MONITOR_CRON,
-  CHATGPT_PROMO_REPO_URL,
   COUPANG_SEARCH_URL,
   COUPANG_SONY_SEARCH_URL,
   COSTCO_DESKTOP_URL,
   PCHOME_SEARCH_URL,
+  DOCTOR_OF_CREDIT_MONITOR_CRON,
+  DOCTOR_OF_CREDIT_PROMO_URL,
   TIGERAIR_HOME_URL,
   TIGERAIR_MONITOR_CRON,
   buildBaselineInventoryEvent,
@@ -565,6 +566,12 @@ test("recognizes common Traditional Chinese text without Workers AI", async () =
   assert.deepEqual(
     deterministicNaturalLanguageIntent("查 ChatGPT Business 優惠碼更新"),
     { action: "gptpromo" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent(
+      "查 Doctor of Credit ChatGPT 優惠",
+    ),
+    { action: "docpromo" },
   );
 });
 
@@ -1252,35 +1259,74 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
   assert.match(reply, /台灣虎航 排程：等待第一次執行/);
   assert.match(reply, /ChatGPT Business 優惠情報 排程：等待第一次執行/);
+  assert.match(reply, /Doctor of Credit 優惠文章 排程：等待第一次執行/);
   assert.match(reply, /商品每 5 分鐘；虎航與公開優惠情報每 30 分鐘/);
   assert.match(reply, /虎航開賣提醒：每 5 分鐘/);
   assert.equal(TIGERAIR_MONITOR_CRON, "4,34 * * * *");
   assert.equal(CHATGPT_PROMO_MONITOR_CRON, "14,44 * * * *");
+  assert.equal(DOCTOR_OF_CREDIT_MONITOR_CRON, "19,49 * * * *");
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
-test("queries public ChatGPT Business promotion update metadata", async () => {
-  const sha = "0123456789abcdef0123456789abcdef01234567";
+test("queries and filters the public ChatGPT Business catalog", async () => {
+  const fakeFetch = async () =>
+    Response.json({
+      last_updated: "2026-07-29",
+      valid: {
+        US: [
+          {
+            code: "publicus",
+            price_usd: 20,
+            company: "Public Company",
+            discount_pct: 60,
+          },
+        ],
+        JP: [
+          {
+            code: "publicjp",
+            price_local: "¥3,050/月",
+            company: "Public Japan",
+          },
+        ],
+      },
+      expired: [],
+    });
+
+  const reply = await replyForCommand("/gptpromo US", fakeFetch);
+
+  assert.match(reply, /ChatGPT Business 公開優惠清單/);
+  assert.match(reply, /範圍：US/);
+  assert.match(reply, /publicus/);
+  assert.doesNotMatch(reply, /publicjp/);
+  assert.match(reply, /未經 OpenAI 官方驗證/);
+  assert.match(reply, /不會自動試碼、跨區、登入或付款/);
+});
+
+test("queries the exact Doctor of Credit promotion article", async () => {
   const fakeFetch = async () =>
     Response.json([
       {
-        sha,
-        html_url: `${CHATGPT_PROMO_REPO_URL}/commit/${sha}`,
-        commit: {
-          message: "Refresh public metadata",
-          committer: { date: "2026-07-29T01:00:00Z" },
+        id: 258199,
+        date: "2026-07-24T11:16:08",
+        modified: "2026-07-24T17:36:46",
+        link: DOCTOR_OF_CREDIT_PROMO_URL,
+        title: {
+          rendered:
+            "[Expired] ChatGPT: Get Two Business Seats For Price Of One With Promo Code AGT",
+        },
+        content: {
+          rendered:
+            '<p><a href="https://chatgpt.com/?promoCode=AGT">offer</a></p>',
         },
       },
     ]);
 
-  const reply = await replyForCommand("/gptpromo", fakeFetch);
+  const reply = await replyForCommand("/docpromo", fakeFetch);
 
-  assert.match(reply, /ChatGPT Business 公開優惠情報/);
-  assert.match(reply, /known_codes\.json 公開清單有新版本/);
-  assert.match(reply, /社群情報，未經 OpenAI 官方驗證/);
-  assert.doesNotMatch(reply, /Refresh public metadata/);
-  assert.match(reply, new RegExp(`${sha}$`, "m"));
-  assert.match(reply, /不自動猜碼、試碼、切換地區、登入或付款/);
+  assert.match(reply, /Doctor of Credit ChatGPT Business 優惠追蹤/);
+  assert.match(reply, /文章目前標示 Expired/);
+  assert.match(reply, /公開代碼：agt/);
+  assert.match(reply, /未經 OpenAI 官方驗證/);
 });
 
 test("lists the active notification test command", async () => {
@@ -1292,7 +1338,8 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
   assert.match(reply, /\/tigerair－立即查詢台灣虎航官方優惠/);
-  assert.match(reply, /\/gptpromo－查詢 ChatGPT Business 公開優惠情報/);
+  assert.match(reply, /\/gptpromo \[地區碼\]－查詢 ChatGPT Business 公開優惠清單/);
+  assert.match(reply, /\/docpromo－查詢 Doctor of Credit 指定優惠文章/);
   assert.match(reply, /\/errors－查看目前異常與自動修復狀態/);
   assert.match(reply, /\/retry 目標－立即重試一次指定監控/);
   assert.match(reply, /\/sources－顯示已驗證來源與擷取方式/);
