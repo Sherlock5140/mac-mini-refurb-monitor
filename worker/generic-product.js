@@ -58,6 +58,7 @@ function productOffers(product) {
 }
 
 export function parseGenericProductPage(html, pageUrl) {
+  const verifiedPageUrl = validatePublicProductUrl(pageUrl);
   const products = [];
   const pattern =
     /<script\b[^>]*\btype=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
@@ -145,6 +146,12 @@ export function parseGenericProductPage(html, pageUrl) {
       pageUrl,
     ).href,
   ).href;
+  if (
+    new URL(productUrl).hostname.toLowerCase() !==
+    verifiedPageUrl.hostname.toLowerCase()
+  ) {
+    throw new Error("商品連結與來源頁不同網域，需要專用網站 adapter");
+  }
   return {
     name: candidate.name,
     stableId,

@@ -15,6 +15,11 @@ import {
   runWithRetry,
   validateSnapshot,
 } from "./self-healing.js";
+import {
+  assertVerifiedSourceUrl,
+  formatVerifiedSources,
+  sourceDisclosure,
+} from "./source-verification.js";
 
 const APPLE_REFURB_URL =
   "https://www.apple.com/tw/shop/refurbished/mac";
@@ -60,6 +65,7 @@ const AI_CHAT_ACTIONS = new Set([
   "diagnose",
   "retry",
   "recover",
+  "sources",
 ]);
 const AI_DIAGNOSTIC_STATES = new Set([
   "blocked",
@@ -178,6 +184,9 @@ export function deterministicNaturalLanguageIntent(text) {
   const target = targetNameFromNaturalLanguage(normalized);
   const url = normalized.match(/https:\/\/[^\s<>]+/i)?.[0] ?? "";
 
+  if (/(?:資料|訊息|監控).*(?:來源|出處)|(?:來源|出處).*(?:資料|訊息|監控)/i.test(normalized)) {
+    return { action: "sources" };
+  }
   if (/(?:錯誤|異常).*(?:列表|清單|狀態)|(?:哪些|目前).*(?:錯誤|異常)/i.test(normalized)) {
     return { action: "errors" };
   }
@@ -269,7 +278,7 @@ export async function interpretNaturalLanguage(text, ai) {
           "buy、status、help 或 chat。需要即時商品、價格或狀態時必須",
           "選擇對應工具，禁止自行猜測。管理意圖使用 targets、pause、",
           "resume、remove、archive、trash、restore、add、errors、diagnose、",
-          "retry 或 recover，並將目標名稱",
+          "retry、recover 或 sources，並將目標名稱",
           "或新增網址放在 target。chat 只回答本監控",
           "系統的使用方式。新增未知網站只能說明需先建立來源 adapter。",
           "輸出 JSON：{\"action\":\"...\",\"target\":\"...\",\"reply\":\"...\"}。",
@@ -1224,6 +1233,7 @@ function helpMessage() {
     "/diagnose 目標－診斷指定監控",
     "/retry 目標－立即重試一次指定監控",
     "/recover 目標－略過冷卻並嘗試恢復",
+    "/sources－顯示已驗證來源與擷取方式",
     "/test－傳送一則 Cloudflare 主動通知測試",
     "/link－開啟 Apple 整修 Mac 購買頁",
     "/help－顯示這份說明",
@@ -1247,6 +1257,10 @@ async function fetchInventory(fetchImpl, ai = null) {
   if (!response.ok) {
     throw new Error(`Apple HTTP ${response.status}`);
   }
+  assertVerifiedSourceUrl(
+    "apple",
+    response.url || APPLE_REFURB_URL,
+  );
   const html = await response.text();
   return parseWithAiDiagnostics({
     ai,
@@ -1275,6 +1289,10 @@ async function fetchCostcoInventory(fetchImpl, ai = null) {
     if (!response.ok) {
       throw new Error(`Costco 商品 API HTTP ${response.status}`);
     }
+    assertVerifiedSourceUrl(
+      "costco",
+      response.url || COSTCO_PRODUCTS_API_URL,
+    );
     return parseCostcoApiInventory(await response.json());
   } catch (error) {
     apiError = error instanceof Error ? error.message : "未知 API 錯誤";
@@ -1297,6 +1315,10 @@ async function fetchCostcoInventory(fetchImpl, ai = null) {
       `${apiError}；Costco 分類頁 HTTP ${response.status}`,
     );
   }
+  assertVerifiedSourceUrl(
+    "costco",
+    response.url || COSTCO_DESKTOP_URL,
+  );
   try {
     return await parseWithAiDiagnostics({
       ai,
@@ -1330,6 +1352,10 @@ async function fetchPchomeInventory(fetchImpl, ai = null) {
   if (!response.ok) {
     throw new Error(`PChome HTTP ${response.status}`);
   }
+  assertVerifiedSourceUrl(
+    "pchome",
+    response.url || PCHOME_SEARCH_URL,
+  );
   const html = await response.text();
   return parseWithAiDiagnostics({
     ai,
@@ -1339,10 +1365,11 @@ async function fetchPchomeInventory(fetchImpl, ai = null) {
   });
 }
 
-async function fetchCoupangPage(browser, url, label) {
+async function fetchCoupangPage(browser, url, label, source) {
   if (!browser?.quickAction) {
     throw new Error("Cloudflare Browser Run 尚未設定");
   }
+  assertVerifiedSourceUrl(source, url);
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const response = await browser.quickAction("content", {
       url,
@@ -1362,6 +1389,7 @@ async function fetchCoupangPage(browser, url, label) {
       throw new Error(`${label} Browser Run HTTP ${response.status}`);
     }
     const payload = await response.json().catch(() => null);
+    assertVerifiedSourceUrl(source, payload?.meta?.url || url);
     const html =
       typeof payload?.result === "string" ? payload.result : "";
     const visible = visiblePageText(html).slice(0, 800);
@@ -1395,6 +1423,7 @@ async function fetchCoupangInventory(browser, ai = null) {
     browser,
     COUPANG_SEARCH_URL,
     "酷澎 Mac mini",
+    "coupang",
   );
   return parseWithAiDiagnostics({
     ai,
@@ -1409,6 +1438,7 @@ async function fetchCoupangSonyInventory(browser, ai = null) {
     browser,
     COUPANG_SONY_SEARCH_URL,
     "酷澎 Sony",
+    "sony",
   );
   return parseWithAiDiagnostics({
     ai,
@@ -1937,6 +1967,9 @@ export async function replyForCommand(
   if (["/start", "/help"].includes(command)) {
     return helpMessage();
   }
+  if (command === "/sources") {
+    return formatVerifiedSources();
+  }
   if (
     [
       "/targets", "/pause", "/resume", "/archive", "/remove",
@@ -2077,6 +2110,9 @@ async function replyForNaturalLanguageIntent(intent, env) {
   if (["retry", "recover"].includes(intent.action)) {
     return runMonitorNow(env, intent.target || "");
   }
+  if (intent.action === "sources") {
+    return formatVerifiedSources();
+  }
   const command = {
     check: "/check",
     costco: "/costco",
@@ -2150,6 +2186,9 @@ class NotificationError extends Error {}
 async function sendMonitorEvents(env, events) {
   for (const event of events) {
     let text = `${event.title}\n\n${event.message}`;
+    if (event.sourceDisclosure) {
+      text += `\n\n${event.sourceDisclosure}`;
+    }
     if (event.url) {
       text += `\n\n${event.url}`;
     }
@@ -2167,6 +2206,43 @@ async function sendMonitorEvents(env, events) {
       );
     }
   }
+}
+
+export function attachVerifiedSource(
+  events,
+  {
+    source,
+    sourceUrl,
+    verifiedAt = taipeiTime(),
+  },
+) {
+  const disclosure = sourceDisclosure(
+    source,
+    sourceUrl,
+    verifiedAt,
+  );
+  for (const event of events) {
+    event.sourceDisclosure ??= disclosure;
+  }
+  return events;
+}
+
+export function attachCustomSource(
+  events,
+  sourceUrl,
+  verifiedAt = taipeiTime(),
+) {
+  const url = validatePublicProductUrl(sourceUrl);
+  const disclosure = [
+    `資料來源：${url.hostname}`,
+    `原始網址：${url.href}`,
+    "擷取方式：公開商品頁 Product JSON-LD",
+    `驗證時間：${verifiedAt}`,
+  ].join("\n");
+  for (const event of events) {
+    event.sourceDisclosure ??= disclosure;
+  }
+  return events;
 }
 
 export function buildTestNotificationEvent(
@@ -2526,6 +2602,10 @@ async function runSourceMonitor(env, {
       updated.lastHeartbeatDate = today;
     }
 
+    attachVerifiedSource(events, {
+      source,
+      sourceUrl: purchaseUrl,
+    });
     await sendMonitorEvents(env, events);
     updated.lastRunAt = nowIso;
     updated.lastSuccessAt = nowIso;
@@ -2558,6 +2638,10 @@ async function runSourceMonitor(env, {
     });
     let notificationError = null;
     try {
+      attachVerifiedSource(result.events, {
+        source,
+        sourceUrl: purchaseUrl,
+      });
       await sendMonitorEvents(env, result.events);
     } catch (sendError) {
       notificationError = sendError;
@@ -2721,6 +2805,7 @@ async function runGenericTargetMonitor(env, target, { force = false } = {}) {
       minimumErrorCount: 3,
     });
     if (recovered) events.unshift(recovered);
+    attachCustomSource(events, target.sourceUrl);
     await sendMonitorEvents(env, events);
     result.state.lastRunAt = nowIso;
     result.state.lastSuccessAt = nowIso;
@@ -2737,6 +2822,7 @@ async function runGenericTargetMonitor(env, target, { force = false } = {}) {
       label: target.label,
       notifyAt: [3, 6],
     });
+    attachCustomSource(result.events, target.sourceUrl);
     await sendMonitorEvents(env, result.events);
     await persistGenericMonitorResult(env, target.id, result.state, {
       status: "error",

@@ -20,6 +20,8 @@ import {
   claimAiChatAllowance,
   claimTelegramUpdate,
   deterministicNaturalLanguageIntent,
+  attachCustomSource,
+  attachVerifiedSource,
   interpretNaturalLanguage,
   loadMonitorTargets,
   manageMonitorTargets,
@@ -526,6 +528,10 @@ test("recognizes common Traditional Chinese text without Workers AI", async () =
   assert.deepEqual(
     deterministicNaturalLanguageIntent("診斷酷澎失敗原因"),
     { action: "diagnose", target: "酷澎" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查看監控資料來源"),
+    { action: "sources" },
   );
 });
 
@@ -1110,6 +1116,38 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
   assert.match(reply, /\/errors－查看目前異常與自動修復狀態/);
   assert.match(reply, /\/retry 目標－立即重試一次指定監控/);
+  assert.match(reply, /\/sources－顯示已驗證來源與擷取方式/);
+});
+
+test("lists only registered verified sources", async () => {
+  const reply = await replyForCommand("/sources");
+
+  assert.match(reply, /Apple 台灣官方整修品/);
+  assert.match(reply, /Costco 台灣官方網站/);
+  assert.match(reply, /PChome 24h 官方網站/);
+  assert.match(reply, /酷澎台灣官方網站/);
+  assert.doesNotMatch(reply, /虎航|Tigerair/i);
+});
+
+test("adds auditable provenance to fixed and custom notifications", () => {
+  const fixed = attachVerifiedSource(
+    [{ title: "測試", message: "內容" }],
+    {
+      source: "apple",
+      sourceUrl: APPLE_REFURB_URL,
+      verifiedAt: "2026/7/28 20:00:00",
+    },
+  );
+  const custom = attachCustomSource(
+    [{ title: "測試", message: "內容" }],
+    "https://shop.example.com/item/1",
+    "2026/7/28 20:00:00",
+  );
+
+  assert.match(fixed[0].sourceDisclosure, /Apple 台灣官方整修品/);
+  assert.match(fixed[0].sourceDisclosure, /原始網址：https:\/\/www\.apple\.com/);
+  assert.match(custom[0].sourceDisclosure, /資料來源：shop\.example\.com/);
+  assert.match(custom[0].sourceDisclosure, /Product JSON-LD/);
 });
 
 test("public health response does not expose operational details", async () => {

@@ -125,4 +125,13 @@ test("rejects foreign currency and ambiguous multi-product pages", () => {
     ),
     /庫存狀態不明/,
   );
+  assert.throws(
+    () => parseGenericProductPage(
+      productPage({
+        url: "https://checkout.example.net/products/sku-123",
+      }),
+      "https://shop.example.com/products/sku-123",
+    ),
+    /不同網域/,
+  );
 });
