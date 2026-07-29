@@ -226,6 +226,18 @@ test("parses date-only travel periods from an official promotion image", () => {
   });
 });
 
+test("rejects a travel-end date misclassified as a long sale period", () => {
+  assert.equal(
+    parseTigerairSaleScheduleText(`
+      SALE_START=2026-07-29 10:00
+      SALE_END=2026-10-24 23:59
+      TRAVEL_START=2026-07-29
+      TRAVEL_END=2026-10-24
+    `),
+    null,
+  );
+});
+
 test("missing Tigerair dates use safe fallbacks and never render 1970", () => {
   const message = formatTigerairPromotionMessage({
     name: "🐯 世界老虎日全航線優惠 TWD 1,199 起",

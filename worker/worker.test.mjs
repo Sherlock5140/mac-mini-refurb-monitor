@@ -1242,11 +1242,18 @@ test("answers Tigerair commands from verified official offers", async () => {
         "@cf/moondream/moondream3.1-9B-A2B",
       );
       assert.match(input.image, /^data:image\/jpeg;base64,/);
-      return {
-        result: {
-          answer: "SALE_START=2026-07-29 10:00",
-        },
-      };
+      const answer = input.question.startsWith(
+        "Read only the single image line labelled 銷售期間",
+      )
+        ? [
+            "SALE_START=2026-07-29 10:00",
+            "SALE_END=2026-07-30 23:59",
+          ].join("\n")
+        : [
+            "TRAVEL_START=2026-07-29",
+            "TRAVEL_END=2026-10-24",
+          ].join("\n");
+      return { result: { answer } };
     },
   };
 
@@ -1266,9 +1273,16 @@ test("answers Tigerair commands from verified official offers", async () => {
   assert.match(reply, /票價／航線：/);
   assert.match(reply, /官方連結：https:\/\/www\.tigerairtw\.com/);
   assert.doesNotMatch(reply, /目前辨識|重點關注|查詢時間|擷取方式/);
-  assert.match(reply, /銷售：2026\/7\/29 10:00 起/);
+  assert.match(
+    reply,
+    /銷售：2026\/7\/29 10:00–2026\/7\/30 23:59/,
+  );
+  assert.match(
+    reply,
+    /旅遊期間：2026\/7\/29～2026\/10\/24/,
+  );
   assert.match(reply, /tigeresg/);
-  assert.equal(visionCalls, 1);
+  assert.equal(visionCalls, 2);
 });
 
 test("answers Tigerair commands when optional Browser Run is incomplete", async () => {

@@ -1746,6 +1746,34 @@ async function fetchCoupangAirpodsInventory(browser, ai = null) {
   });
 }
 
+async function runTigerairImageOcr(ai, image, question) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await ai.run(TIGERAIR_VISION_MODEL, {
+        task: "query",
+        image,
+        question,
+        reasoning: false,
+        temperature: 0,
+        max_tokens: 100,
+        stream: false,
+      });
+    } catch (error) {
+      if (
+        attempt === 2 ||
+        !String(error?.message ?? error).includes("3040")
+      ) {
+        throw error;
+      }
+    }
+  }
+  return null;
+}
+
+function tigerairOcrAnswer(result) {
+  return result?.answer ?? result?.result?.answer ?? "";
+}
+
 async function enrichTigerairSaleSchedules(
   snapshot,
   ai,
@@ -1831,39 +1859,36 @@ async function enrichTigerairSaleSchedules(
       }
       const image =
         `data:${contentType.split(";")[0]};base64,${btoa(binary)}`;
-      let result;
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-          result = await ai.run(TIGERAIR_VISION_MODEL, {
-            task: "query",
-            image,
-            question: [
-              "OCR the exact airfare sale period and travel period from this official promotion image.",
-              "Return exactly four lines:",
-              "SALE_START=YYYY-MM-DD HH:mm or UNKNOWN",
-              "SALE_END=YYYY-MM-DD HH:mm or UNKNOWN",
-              "TRAVEL_START=YYYY-MM-DD or UNKNOWN",
-              "TRAVEL_END=YYYY-MM-DD or UNKNOWN",
-              "Keep sale dates separate from travel dates.",
-              "Use Asia/Taipei local time and do not guess.",
-            ].join("\n"),
-            reasoning: false,
-            temperature: 0,
-            max_tokens: 160,
-            stream: false,
-          });
-          break;
-        } catch (error) {
-          if (
-            attempt === 2 ||
-            !String(error?.message ?? error).includes("3040")
-          ) {
-            throw error;
-          }
-        }
-      }
+      const saleResult = await runTigerairImageOcr(
+        ai,
+        image,
+        [
+          "Read only the single image line labelled 銷售期間.",
+          "Ignore the line labelled 旅遊期間 completely.",
+          "Return exactly two lines:",
+          "SALE_START=YYYY-MM-DD HH:mm or UNKNOWN",
+          "SALE_END=YYYY-MM-DD HH:mm or UNKNOWN",
+          "If the end omits its year, use the start year from the same 銷售期間 line.",
+          "Use Asia/Taipei local time and do not guess.",
+        ].join("\n"),
+      );
+      const travelResult = await runTigerairImageOcr(
+        ai,
+        image,
+        [
+          "Read only the single image line labelled 旅遊期間.",
+          "Ignore the line labelled 銷售期間 completely.",
+          "Return exactly two lines:",
+          "TRAVEL_START=YYYY-MM-DD or UNKNOWN",
+          "TRAVEL_END=YYYY-MM-DD or UNKNOWN",
+          "Use the exact printed dates and do not guess.",
+        ].join("\n"),
+      );
       const parsed = parseTigerairSaleScheduleText(
-        result?.answer ?? result?.result?.answer,
+        [
+          tigerairOcrAnswer(saleResult),
+          tigerairOcrAnswer(travelResult),
+        ].join("\n"),
       );
       const schedule = parsed;
       if (!schedule) {

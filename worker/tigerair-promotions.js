@@ -3,7 +3,7 @@ export const TIGERAIR_HOME_URL =
 export const TIGERAIR_BANNERS_API_URL =
   "https://api-cms.tigerairtw.com/api/home-banners?language=zh-TW&perPage=100";
 export const TIGERAIR_TIME_ZONE = "Asia/Taipei";
-export const TIGERAIR_SCHEDULE_PARSER_VERSION = 2;
+export const TIGERAIR_SCHEDULE_PARSER_VERSION = 3;
 
 const PROMOTION_TERMS =
   /促銷|優惠|特惠|開賣|快閃|折扣|未稅|(?:TWD|NT\$?)\s*[\d,]+\s*起|\d+(?:\.\d+)?\s*折|票價.*起|機票.*(?:起|優惠)/i;
@@ -547,6 +547,13 @@ export function parseTigerairSaleScheduleText(text) {
   if (
     saleEndAt &&
     Date.parse(saleEndAt) < Date.parse(saleStartAt)
+  ) {
+    return null;
+  }
+  if (
+    saleEndAt &&
+    Date.parse(saleEndAt) - Date.parse(saleStartAt) >
+      31 * 24 * 60 * 60 * 1000
   ) {
     return null;
   }
