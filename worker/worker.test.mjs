@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AIRPODS_MONITOR_CRON,
   APPLE_REFURB_URL,
   CHATGPT_PROMO_MONITOR_CRON,
+  COUPANG_AIRPODS_SEARCH_URL,
+  COUPANG_MONITOR_CRON,
   COUPANG_SEARCH_URL,
   COUPANG_SONY_SEARCH_URL,
   COSTCO_DESKTOP_URL,
   PCHOME_SEARCH_URL,
+  SONY_MONITOR_CRON,
   DOCTOR_OF_CREDIT_MONITOR_CRON,
   DOCTOR_OF_CREDIT_PROMO_URL,
   TIGERAIR_HOME_URL,
@@ -17,6 +21,7 @@ import {
   default as worker,
   formatInventorySummary,
   formatCoupangSummary,
+  formatCoupangAirpodsSummary,
   formatCoupangSonySummary,
   formatCostcoSummary,
   formatPchomeSummary,
@@ -33,6 +38,7 @@ import {
   parseAppleInventory,
   parseWithAiDiagnostics,
   parseCoupangInventory,
+  parseCoupangAirpodsInventory,
   parseCoupangSonyInventory,
   parseCostcoApiInventory,
   parseCostcoInventory,
@@ -420,6 +426,30 @@ const coupangSonyHtml = [
   }),
 ].join("");
 
+const coupangAirpodsHtml = [
+  coupangCard({
+    name: "Apple 2025 AirPods Pro 3, 白色",
+    vendorItemId: "595388956377088",
+    productId: "595388956377089",
+    itemId: "595388956327937",
+    price: 6130,
+  }),
+  coupangCard({
+    name: "Daon 時尚 AirPods Pro 3 保護殼",
+    vendorItemId: "21028122753093",
+    productId: "21009452882695",
+    itemId: "21028122753092",
+    price: 220,
+  }),
+  coupangCard({
+    name: "Apple 2025 AirPods Pro 3, 白色",
+    vendorItemId: "595388956377090",
+    productId: "595388956377091",
+    itemId: "595388956327938",
+    price: 5990,
+  }),
+].join("");
+
 const tigerairHomepageHtml = `
   <main>
     <a class="q-carousel__slide"
@@ -513,6 +543,10 @@ test("recognizes common Traditional Chinese text without Workers AI", async () =
   assert.deepEqual(
     deterministicNaturalLanguageIntent("幫我查 Sony 現在多少錢"),
     { action: "sony" },
+  );
+  assert.deepEqual(
+    deterministicNaturalLanguageIntent("查 AirPods Pro 3 現在多少錢"),
+    { action: "airpods" },
   );
   assert.deepEqual(
     deterministicNaturalLanguageIntent("查看所有監控"),
@@ -909,6 +943,32 @@ test("formats the Sony price tracker and direct purchase link", () => {
   assert.ok(summary.includes(COUPANG_SONY_SEARCH_URL));
 });
 
+test("parses only the exact AirPods Pro 3 product and excludes accessories", () => {
+  const snapshot = parseCoupangAirpodsInventory(coupangAirpodsHtml);
+
+  assert.equal(snapshot.totalProductCount, 3);
+  assert.equal(snapshot.targetProducts.length, 1);
+  assert.deepEqual(snapshot.targetProducts[0], {
+    sku: "AIRPODS-595388956327937",
+    name: "Apple 2025 AirPods Pro 3, 白色",
+    details: "Apple｜AirPods Pro 3｜白色｜酷澎指定商品",
+    priceTwd: 6130,
+    url: "https://www.tw.coupang.com/products/595388956377089?itemId=595388956327937&vendorItemId=595388956377088",
+  });
+});
+
+test("formats the AirPods Pro 3 price tracker and direct purchase link", () => {
+  const summary = formatCoupangAirpodsSummary(
+    parseCoupangAirpodsInventory(coupangAirpodsHtml),
+  );
+
+  assert.match(summary, /AirPods Pro 3 降價追蹤/);
+  assert.match(summary, /NT\$6,130/);
+  assert.match(summary, /排除保護殼、耳機殼/);
+  assert.match(summary, /價格不變不重複通知/);
+  assert.ok(summary.includes(COUPANG_AIRPODS_SEARCH_URL));
+});
+
 test("Sony tracker keeps only price-drop inventory events", () => {
   const events = [
     { kind: "new" },
@@ -1069,6 +1129,26 @@ test("answers Sony commands through Cloudflare Browser Run", async () => {
   assert.match(reply, /NT\$10,791/);
 });
 
+test("answers AirPods commands through Cloudflare Browser Run", async () => {
+  const fakeBrowser = {
+    quickAction: async () =>
+      Response.json({
+        success: true,
+        result: coupangAirpodsHtml,
+        meta: { status: 200 },
+      }),
+  };
+  const reply = await replyForCommand(
+    "/airpods",
+    fetch,
+    null,
+    fakeBrowser,
+  );
+
+  assert.match(reply, /AirPods Pro 3 降價追蹤/);
+  assert.match(reply, /NT\$6,130/);
+});
+
 test("answers Tigerair commands from verified official offers", async () => {
   let visionCalls = 0;
   const fakeBrowser = {
@@ -1184,39 +1264,28 @@ test("answers Tigerair commands when optional Browser Run is incomplete", async 
   assert.match(reply, /全航線優惠 TWD 1,199 起/);
 });
 
-test("retries one blocked Coupang render before parsing Sony", async () => {
+test("does not immediately retry a blocked Coupang render", async () => {
   let browserCalls = 0;
   const fakeBrowser = {
     async quickAction() {
       browserCalls += 1;
-      if (browserCalls === 1) {
-        return Response.json({
-          success: true,
-          result:
-            "<html><body>Sorry! Access denied 您沒有權限存取此頁面。</body></html>",
-          meta: { status: 200 },
-        });
-      }
       return Response.json({
         success: true,
-        result: coupangSonyHtml,
+        result:
+          "<html><body>Sorry! Access denied 您沒有權限存取此頁面。</body></html>",
         meta: { status: 200 },
       });
     },
   };
 
-  const reply = await replyForCommand(
-    "/sony",
-    fetch,
-    null,
-    fakeBrowser,
+  await assert.rejects(
+    replyForCommand("/sony", fetch, null, fakeBrowser),
+    /酷澎 Sony遭酷澎暫時拒絕 Cloudflare 存取/,
   );
-
-  assert.equal(browserCalls, 2);
-  assert.match(reply, /NT\$10,791/);
+  assert.equal(browserCalls, 1);
 });
 
-test("reports an explicit Coupang block after one retry", async () => {
+test("reports an explicit Coupang block after one request", async () => {
   let browserCalls = 0;
   const fakeBrowser = {
     async quickAction() {
@@ -1234,7 +1303,7 @@ test("reports an explicit Coupang block after one retry", async () => {
     replyForCommand("/sony", fetch, null, fakeBrowser),
     /酷澎 Sony遭酷澎暫時拒絕 Cloudflare 存取/,
   );
-  assert.equal(browserCalls, 2);
+  assert.equal(browserCalls, 1);
 });
 
 test("reports Cloudflare scheduler state in status commands", async () => {
@@ -1257,14 +1326,18 @@ test("reports Cloudflare scheduler state in status commands", async () => {
   assert.match(reply, /Costco 排程：等待第一次執行/);
   assert.match(reply, /酷澎 排程：等待第一次執行/);
   assert.match(reply, /酷澎 Sony 排程：等待第一次執行/);
+  assert.match(reply, /酷澎 AirPods Pro 3 排程：等待第一次執行/);
   assert.match(reply, /台灣虎航 排程：等待第一次執行/);
   assert.match(reply, /ChatGPT Business 優惠情報 排程：等待第一次執行/);
   assert.match(reply, /Doctor of Credit 優惠文章 排程：等待第一次執行/);
-  assert.match(reply, /商品每 5 分鐘；虎航與公開優惠情報每 30 分鐘/);
+  assert.match(reply, /一般商品每 5 分鐘；酷澎 Browser、虎航與公開優惠情報每 30 分鐘/);
   assert.match(reply, /虎航開賣提醒：每 5 分鐘/);
   assert.equal(TIGERAIR_MONITOR_CRON, "4,34 * * * *");
-  assert.equal(CHATGPT_PROMO_MONITOR_CRON, "14,44 * * * *");
-  assert.equal(DOCTOR_OF_CREDIT_MONITOR_CRON, "19,49 * * * *");
+  assert.equal(COUPANG_MONITOR_CRON, "7,37 * * * *");
+  assert.equal(SONY_MONITOR_CRON, "17,47 * * * *");
+  assert.equal(AIRPODS_MONITOR_CRON, "27,57 * * * *");
+  assert.equal(CHATGPT_PROMO_MONITOR_CRON, "7,37 * * * *");
+  assert.equal(DOCTOR_OF_CREDIT_MONITOR_CRON, "17,47 * * * *");
   assert.doesNotMatch(reply, /GitHub Actions/);
 });
 
@@ -1338,6 +1411,7 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/pchome－立即查詢 PChome 24h 庫存與價格/);
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
+  assert.match(reply, /\/airpods－立即查詢酷澎 AirPods Pro 3 價格/);
   assert.match(reply, /\/tigerair－立即查詢台灣虎航官方優惠/);
   assert.match(reply, /\/gptpromo \[地區碼\] \[7d\]－查最近新發現/);
   assert.match(reply, /\/gptpromo all－查詢完整公開清單/);

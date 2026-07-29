@@ -43,6 +43,13 @@ test("accepts exact registered official hosts", () => {
     ).hostname,
     "www.doctorofcredit.com",
   );
+  assert.equal(
+    assertVerifiedSourceUrl(
+      "airpods",
+      "https://www.tw.coupang.com/np/search?q=AirPods%20Pro%203",
+    ).hostname,
+    "www.tw.coupang.com",
+  );
 });
 
 test("rejects lookalike, insecure, and unregistered sources", () => {
@@ -102,6 +109,13 @@ test("rejects a different page or query on the same official host", () => {
     () => assertVerifiedSourceUrl(
       "sony",
       "https://www.tw.coupang.com/np/search?q=mac%20mini%20m4",
+    ),
+    /頁面指紋不符/,
+  );
+  assert.throws(
+    () => assertVerifiedSourceUrl(
+      "airpods",
+      "https://www.tw.coupang.com/np/search?q=AirPods%20Pro%202",
     ),
     /頁面指紋不符/,
   );

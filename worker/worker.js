@@ -69,15 +69,18 @@ const COUPANG_SEARCH_URL =
 const COUPANG_ORIGIN = "https://www.tw.coupang.com";
 const COUPANG_SONY_SEARCH_URL =
   "https://www.tw.coupang.com/np/search?q=WH-1000XM6";
+const COUPANG_AIRPODS_SEARCH_URL =
+  "https://www.tw.coupang.com/np/search?q=AirPods%20Pro%203";
 const MAC_MONITOR_CRON = "*/5 * * * *";
-const SONY_MONITOR_CRON =
-  "2,7,12,17,22,27,32,37,42,47,52,57 * * * *";
+const COUPANG_MONITOR_CRON = "7,37 * * * *";
+const SONY_MONITOR_CRON = "17,47 * * * *";
+const AIRPODS_MONITOR_CRON = "27,57 * * * *";
 const TIGERAIR_MONITOR_CRON =
   "4,34 * * * *";
 const CHATGPT_PROMO_MONITOR_CRON =
-  "14,44 * * * *";
+  "7,37 * * * *";
 const DOCTOR_OF_CREDIT_MONITOR_CRON =
-  "19,49 * * * *";
+  "17,47 * * * *";
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const AI_DIAGNOSTIC_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const AI_CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -90,6 +93,7 @@ const AI_CHAT_ACTIONS = new Set([
   "pchome",
   "coupang",
   "sony",
+  "airpods",
   "buy",
   "status",
   "help",
@@ -139,6 +143,10 @@ const SOURCE_TABLES = {
     state: "sony_monitor_state",
     runs: "sony_monitor_runs",
   },
+  airpods: {
+    state: "airpods_monitor_state",
+    runs: "airpods_monitor_runs",
+  },
   tigerair: {
     state: "tigerair_monitor_state",
     runs: "tigerair_monitor_runs",
@@ -158,6 +166,7 @@ const MONITOR_TARGET_IDS = {
   pchome: "pchome-mac-mini",
   coupang: "coupang-mac-mini",
   sony: "coupang-sony-xm6",
+  airpods: "coupang-airpods-pro-3",
   tigerair: "tigerair-promotions",
   chatgptPromo: "chatgpt-business-promo-updates",
   doctorOfCredit: "doctor-of-credit-chatgpt-promo",
@@ -238,7 +247,10 @@ function targetNameFromNaturalLanguage(text) {
   ) {
     return "ChatGPT Business 優惠情報";
   }
-  if (/sony|wh[\s-]?1000xm6|耳機/i.test(normalized)) return "Sony";
+  if (/airpods?\s*pro\s*3|airpdods/i.test(normalized)) {
+    return "AirPods Pro 3";
+  }
+  if (/sony|wh[\s-]?1000xm6/i.test(normalized)) return "Sony";
   if (/tigerair|虎航|台虎/i.test(normalized)) return "虎航";
   if (/costco|好市多/i.test(normalized)) return "Costco";
   if (/pchome|pc\s*home/i.test(normalized)) return "PChome";
@@ -327,7 +339,10 @@ export function deterministicNaturalLanguageIntent(text) {
   ) {
     return { action: "tigerair" };
   }
-  if (/sony|wh[\s-]?1000xm6|耳機/i.test(lowered)) {
+  if (/airpods?\s*pro\s*3|airpdods/i.test(lowered)) {
+    return { action: "airpods" };
+  }
+  if (/sony|wh[\s-]?1000xm6/i.test(lowered)) {
     return { action: "sony" };
   }
   if (/costco|好市多/i.test(lowered)) {
@@ -361,7 +376,7 @@ export async function interpretNaturalLanguage(text, ai) {
         role: "system",
         content: [
           "你是私人商品與優惠監控 Telegram 助手，使用繁體中文簡短回答。",
-          "將使用者意圖分類成 check、costco、pchome、coupang、sony、tigerair、gptpromo、docpromo、",
+          "將使用者意圖分類成 check、costco、pchome、coupang、sony、airpods、tigerair、gptpromo、docpromo、",
           "buy、status、help 或 chat。需要即時商品、價格或狀態時必須",
           "選擇對應工具，禁止自行猜測。管理意圖使用 targets、pause、",
           "resume、remove、archive、trash、restore、add、errors、diagnose、",
@@ -1092,6 +1107,39 @@ export function parseCoupangSonyInventory(html) {
   };
 }
 
+export function parseCoupangAirpodsInventory(html) {
+  const products = parseCoupangCards(html);
+  const targets = new Map();
+  for (const product of products) {
+    if (
+      product.itemId !== "595388956327937" ||
+      !/^Apple\s+2025\s+AirPods\s+Pro\s+3,\s*白色$/i.test(product.name) ||
+      /(?:保護殼|耳機殼|防塵|吊飾|配件)/i.test(product.name) ||
+      !product.available ||
+      !Number.isFinite(product.priceTwd)
+    ) {
+      continue;
+    }
+    const target = {
+      sku: `AIRPODS-${product.itemId}`,
+      name: product.name,
+      details: "Apple｜AirPods Pro 3｜白色｜酷澎指定商品",
+      priceTwd: product.priceTwd,
+      url: product.url,
+    };
+    targets.set(target.sku, target);
+  }
+  return {
+    totalProductCount: products.length,
+    macProductCount: 0,
+    macMiniCount: 0,
+    deviceCounts: [],
+    targetProducts: [...targets.values()].sort((a, b) =>
+      a.sku.localeCompare(b.sku),
+    ),
+  };
+}
+
 function taipeiTime(value = new Date()) {
   return new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -1296,6 +1344,38 @@ export function formatCoupangSonySummary(
   return lines.join("\n");
 }
 
+export function formatCoupangAirpodsSummary(
+  snapshot,
+  { includePurchaseLink = true } = {},
+) {
+  const productLines = snapshot.targetProducts.length
+    ? snapshot.targetProducts.flatMap((product, index) => [
+        `${index + 1}. AirPods Pro 3 白色｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
+        product.url,
+      ])
+    : ["目前沒有找到指定的 AirPods Pro 3 白色有貨商品。"];
+  const lines = [
+    "🎧 酷澎 AirPods Pro 3 降價追蹤",
+    "",
+    "🎯 追蹤結果",
+    `指定商品：${snapshot.targetProducts.length} 項`,
+    "",
+    "⚙️ 精確條件",
+    "Apple｜2025 AirPods Pro 3｜白色｜指定商品編號",
+    "排除保護殼、耳機殼、吊飾及其他配件。",
+    "比較公開未登入售價，不含個人首購、會員或信用卡優惠。",
+    "價格不變不重複通知，只在價格降低時推播。",
+    "",
+    ...productLines,
+    "",
+    `查詢時間：${taipeiTime()}`,
+  ];
+  if (includePurchaseLink) {
+    lines.push("", `🛒 酷澎搜尋頁：${COUPANG_AIRPODS_SEARCH_URL}`);
+  }
+  return lines.join("\n");
+}
+
 function helpMessage() {
   return [
     "🤖 私人商品與優惠監控指令",
@@ -1305,6 +1385,7 @@ function helpMessage() {
     "/pchome－立即查詢 PChome 24h 庫存與價格",
     "/coupang－立即查詢酷澎庫存、價格與購買連結",
     "/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格",
+    "/airpods－立即查詢酷澎 AirPods Pro 3 價格",
     "/tigerair－立即查詢台灣虎航官方優惠",
     "/gptpromo [地區碼] [7d]－查最近新發現的 Business 優惠",
     "/gptpromo all－查詢完整公開清單",
@@ -1461,7 +1542,7 @@ async function fetchCoupangPage(browser, url, label, source) {
     throw new Error("Cloudflare Browser Run 尚未設定");
   }
   assertVerifiedSourceUrl(source, url);
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 1; attempt += 1) {
     const response = await browser.quickAction("content", {
       url,
       gotoOptions: {
@@ -1490,9 +1571,6 @@ async function fetchCoupangPage(browser, url, label, source) {
         visible,
       );
     if (accessDenied) {
-      if (attempt === 1) {
-        continue;
-      }
       throw new Error(`${label}遭酷澎暫時拒絕 Cloudflare 存取`);
     }
     if (
@@ -1536,6 +1614,21 @@ async function fetchCoupangSonyInventory(browser, ai = null) {
     source: "酷澎 Sony",
     html,
     parser: parseCoupangSonyInventory,
+  });
+}
+
+async function fetchCoupangAirpodsInventory(browser, ai = null) {
+  const html = await fetchCoupangPage(
+    browser,
+    COUPANG_AIRPODS_SEARCH_URL,
+    "酷澎 AirPods Pro 3",
+    "airpods",
+  );
+  return parseWithAiDiagnostics({
+    ai,
+    source: "酷澎 AirPods Pro 3",
+    html,
+    parser: parseCoupangAirpodsInventory,
   });
 }
 
@@ -1917,6 +2010,7 @@ function formatMonitorDiagnostics(status, targetName = "") {
     ["PChome", status?.pchome],
     ["酷澎 Mac mini", status?.coupang],
     ["酷澎 Sony", status?.sony],
+    ["酷澎 AirPods Pro 3", status?.airpods],
     ["台灣虎航優惠", status?.tigerair],
     ["ChatGPT Business 優惠情報", status?.chatgptPromo],
     ["Doctor of Credit 優惠文章", status?.doctorOfCredit],
@@ -2010,8 +2104,10 @@ function findMonitorTarget(targets, query) {
     酷澎: "coupang-mac-mini",
     coupang: "coupang-mac-mini",
     sony: "coupang-sony-xm6",
-    耳機: "coupang-sony-xm6",
     "wh-1000xm6": "coupang-sony-xm6",
+    airpods: "coupang-airpods-pro-3",
+    "airpods-pro-3": "coupang-airpods-pro-3",
+    airpdods: "coupang-airpods-pro-3",
     tigerair: "tigerair-promotions",
     虎航: "tigerair-promotions",
     台虎: "tigerair-promotions",
@@ -2476,6 +2572,8 @@ export async function replyForCommand(
       "",
       scheduleStatusLine("酷澎 Sony", monitor?.sony),
       "",
+      scheduleStatusLine("酷澎 AirPods Pro 3", monitor?.airpods),
+      "",
       scheduleStatusLine("台灣虎航", monitor?.tigerair),
       "",
       scheduleStatusLine(
@@ -2488,7 +2586,7 @@ export async function replyForCommand(
         monitor?.doctorOfCredit,
       ),
       "",
-      "自動監控：商品每 5 分鐘；虎航與公開優惠情報每 30 分鐘。",
+      "自動監控：一般商品每 5 分鐘；酷澎 Browser、虎航與公開優惠情報每 30 分鐘。",
       "虎航開賣提醒：每 5 分鐘檢查已保存的開賣時間。",
       ...(ai?.run
         ? ["Workers AI：已啟用，僅在解析異常時輔助判讀。"]
@@ -2519,6 +2617,11 @@ export async function replyForCommand(
   if (command === "/sony") {
     return formatCoupangSonySummary(
       await fetchCoupangSonyInventory(browser, ai),
+    );
+  }
+  if (command === "/airpods") {
+    return formatCoupangAirpodsSummary(
+      await fetchCoupangAirpodsInventory(browser, ai),
     );
   }
   if (command === "/tigerair") {
@@ -2621,6 +2724,7 @@ async function replyForNaturalLanguageIntent(intent, env) {
     pchome: "/pchome",
     coupang: "/coupang",
     sony: "/sony",
+    airpods: "/airpods",
     tigerair: "/tigerair",
     gptpromo: "/gptpromo",
     docpromo: "/docpromo",
@@ -2993,6 +3097,7 @@ async function monitorStatus(env) {
     pchome,
     coupang,
     sony,
+    airpods,
     tigerair,
     chatgptPromo,
     doctorOfCredit,
@@ -3003,6 +3108,7 @@ async function monitorStatus(env) {
     loadMonitorState(env, "pchome"),
     loadMonitorState(env, "coupang"),
     loadMonitorState(env, "sony"),
+    loadMonitorState(env, "airpods"),
     loadMonitorState(env, "tigerair"),
     loadMonitorState(env, "chatgptPromo"),
     loadMonitorState(env, "doctorOfCredit"),
@@ -3021,6 +3127,7 @@ async function monitorStatus(env) {
     pchome: withEnabled("pchome", pchome),
     coupang: withEnabled("coupang", coupang),
     sony: withEnabled("sony", sony),
+    airpods: withEnabled("airpods", airpods),
     tigerair: withEnabled("tigerair", tigerair),
     chatgptPromo: withEnabled("chatgptPromo", chatgptPromo),
     doctorOfCredit:
@@ -3718,19 +3825,6 @@ function fixedMonitorDefinitions(env) {
         fetchPchomeInventory(fetchImpl, env.AI),
       formatSummary: formatPchomeSummary,
     },
-    {
-      targetId: MONITOR_TARGET_IDS.coupang,
-      source: "coupang",
-      label: "酷澎 M4 Mac mini",
-      sourceName: "酷澎",
-      purchaseUrl: COUPANG_SEARCH_URL,
-      fetchSnapshot: () =>
-        fetchCoupangInventory(env.BROWSER, env.AI),
-      formatSummary: formatCoupangSummary,
-      errorNotificationCounts: [3, 6],
-      recoveryNotificationMinimumErrors: 3,
-      maxAttempts: 1,
-    },
   ];
 }
 
@@ -3763,9 +3857,30 @@ export async function runScheduledMonitor(env) {
     apple: results[0],
     costco: results[1],
     pchome: results[2],
-    coupang: results[3],
     generic: genericResults,
   };
+}
+
+export async function runCoupangScheduledMonitor(env) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB);
+  const target = targets.find(
+    (item) => item.id === MONITOR_TARGET_IDS.coupang,
+  );
+  if (!target?.enabled) {
+    return { ok: true, skipped: true, eventCount: 0 };
+  }
+  return runSourceMonitor(env, {
+    source: "coupang",
+    label: "酷澎 M4 Mac mini",
+    sourceName: "酷澎",
+    purchaseUrl: COUPANG_SEARCH_URL,
+    fetchSnapshot: () =>
+      fetchCoupangInventory(env.BROWSER, env.AI),
+    formatSummary: formatCoupangSummary,
+    errorNotificationCounts: [3, 6],
+    recoveryNotificationMinimumErrors: 3,
+    maxAttempts: 1,
+  });
 }
 
 export async function runSonyScheduledMonitor(env) {
@@ -3784,6 +3899,30 @@ export async function runSonyScheduledMonitor(env) {
     fetchSnapshot: () =>
       fetchCoupangSonyInventory(env.BROWSER, env.AI),
     formatSummary: formatCoupangSonySummary,
+    inventoryEventKinds: ["price_drop"],
+    sendDailyHeartbeat: false,
+    errorNotificationCounts: [3, 6],
+    recoveryNotificationMinimumErrors: 3,
+    maxAttempts: 1,
+  });
+}
+
+export async function runAirpodsScheduledMonitor(env) {
+  const targets = await loadMonitorTargets(env.MONITOR_DB);
+  const target = targets.find(
+    (item) => item.id === MONITOR_TARGET_IDS.airpods,
+  );
+  if (!target?.enabled) {
+    return { ok: true, skipped: true, eventCount: 0 };
+  }
+  return runSourceMonitor(env, {
+    source: "airpods",
+    label: "酷澎 AirPods Pro 3",
+    sourceName: "酷澎 AirPods Pro 3",
+    purchaseUrl: COUPANG_AIRPODS_SEARCH_URL,
+    fetchSnapshot: () =>
+      fetchCoupangAirpodsInventory(env.BROWSER, env.AI),
+    formatSummary: formatCoupangAirpodsSummary,
     inventoryEventKinds: ["price_drop"],
     sendDailyHeartbeat: false,
     errorNotificationCounts: [3, 6],
@@ -3886,6 +4025,20 @@ async function runMonitorNow(env, argument) {
     result = await runDoctorOfCreditMonitor(env, {
       force: true,
     });
+  } else if (target.id === MONITOR_TARGET_IDS.coupang) {
+    result = await runSourceMonitor(env, {
+      source: "coupang",
+      label: "酷澎 M4 Mac mini",
+      sourceName: "酷澎",
+      purchaseUrl: COUPANG_SEARCH_URL,
+      fetchSnapshot: () =>
+        fetchCoupangInventory(env.BROWSER, env.AI),
+      formatSummary: formatCoupangSummary,
+      errorNotificationCounts: [3, 6],
+      recoveryNotificationMinimumErrors: 3,
+      maxAttempts: 1,
+      force: true,
+    });
   } else if (target.id === MONITOR_TARGET_IDS.sony) {
     result = await runSourceMonitor(env, {
       source: "sony",
@@ -3895,6 +4048,22 @@ async function runMonitorNow(env, argument) {
       fetchSnapshot: () =>
         fetchCoupangSonyInventory(env.BROWSER, env.AI),
       formatSummary: formatCoupangSonySummary,
+      inventoryEventKinds: ["price_drop"],
+      sendDailyHeartbeat: false,
+      errorNotificationCounts: [3, 6],
+      recoveryNotificationMinimumErrors: 3,
+      maxAttempts: 1,
+      force: true,
+    });
+  } else if (target.id === MONITOR_TARGET_IDS.airpods) {
+    result = await runSourceMonitor(env, {
+      source: "airpods",
+      label: "酷澎 AirPods Pro 3",
+      sourceName: "酷澎 AirPods Pro 3",
+      purchaseUrl: COUPANG_AIRPODS_SEARCH_URL,
+      fetchSnapshot: () =>
+        fetchCoupangAirpodsInventory(env.BROWSER, env.AI),
+      formatSummary: formatCoupangAirpodsSummary,
       inventoryEventKinds: ["price_drop"],
       sendDailyHeartbeat: false,
       errorNotificationCounts: [3, 6],
@@ -3984,6 +4153,7 @@ async function handleTelegramUpdate(update, env) {
       "/pchome": PCHOME_SEARCH_URL,
       "/coupang": COUPANG_SEARCH_URL,
       "/sony": COUPANG_SONY_SEARCH_URL,
+      "/airpods": COUPANG_AIRPODS_SEARCH_URL,
       "/tigerair": TIGERAIR_HOME_URL,
       "/gptpromo": CHATGPT_PROMO_REPO_URL,
       "/docpromo": DOCTOR_OF_CREDIT_PROMO_URL,
@@ -4090,18 +4260,20 @@ export default {
 
   async scheduled(controller, env, context) {
     let task;
-    if (controller.cron === SONY_MONITOR_CRON) {
-      task = runSonyScheduledMonitor(env);
+    if (controller.cron === COUPANG_MONITOR_CRON) {
+      task = Promise.all([
+        runCoupangScheduledMonitor(env),
+        runChatgptPromoScheduledMonitor(env),
+      ]);
+    } else if (controller.cron === SONY_MONITOR_CRON) {
+      task = Promise.all([
+        runSonyScheduledMonitor(env),
+        runDoctorOfCreditScheduledMonitor(env),
+      ]);
+    } else if (controller.cron === AIRPODS_MONITOR_CRON) {
+      task = runAirpodsScheduledMonitor(env);
     } else if (controller.cron === TIGERAIR_MONITOR_CRON) {
       task = runTigerairScheduledMonitor(env);
-    } else if (
-      controller.cron === CHATGPT_PROMO_MONITOR_CRON
-    ) {
-      task = runChatgptPromoScheduledMonitor(env);
-    } else if (
-      controller.cron === DOCTOR_OF_CREDIT_MONITOR_CRON
-    ) {
-      task = runDoctorOfCreditScheduledMonitor(env);
     } else {
       task = Promise.all([
         runScheduledMonitor(env),
@@ -4115,8 +4287,11 @@ export default {
 export {
   APPLE_REFURB_URL,
   COSTCO_DESKTOP_URL,
+  COUPANG_AIRPODS_SEARCH_URL,
+  COUPANG_MONITOR_CRON,
   COUPANG_SEARCH_URL,
   COUPANG_SONY_SEARCH_URL,
+  AIRPODS_MONITOR_CRON,
   MAC_MONITOR_CRON,
   PCHOME_SEARCH_URL,
   SONY_MONITOR_CRON,

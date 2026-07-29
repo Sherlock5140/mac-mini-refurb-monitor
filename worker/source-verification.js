@@ -64,6 +64,18 @@ const SOURCE_REGISTRY = Object.freeze({
       );
     },
   },
+  airpods: {
+    label: "酷澎台灣官方網站",
+    allowedHosts: ["www.tw.coupang.com"],
+    method: "官方公開頁＋Browser Run",
+    matchesUrl(url) {
+      return (
+        url.pathname.replace(/\/+$/, "") === "/np/search" &&
+        (url.searchParams.get("q") ?? "").toLowerCase() ===
+          "airpods pro 3"
+      );
+    },
+  },
   tigerair: {
     label: "台灣虎航官方網站",
     allowedHosts: ["www.tigerairtw.com"],
