@@ -1213,9 +1213,15 @@ test("answers Tigerair commands from verified official offers", async () => {
     fakeAi,
   );
 
-  assert.match(reply, /台灣虎航官方優惠/);
+  assert.match(reply, /🐯 虎航最新優惠/);
   assert.match(reply, /全航線優惠 TWD 1,199 起/);
-  assert.match(reply, /開賣：2026\/07\/29 10:00/);
+  assert.match(reply, /活動：/);
+  assert.match(reply, /銷售：/);
+  assert.match(reply, /旅遊期間：/);
+  assert.match(reply, /票價／航線：/);
+  assert.match(reply, /官方連結：https:\/\/www\.tigerairtw\.com/);
+  assert.doesNotMatch(reply, /目前辨識|重點關注|查詢時間|擷取方式/);
+  assert.match(reply, /銷售：2026\/7\/29 10:00 起/);
   assert.match(reply, /tigeresg/);
   assert.equal(visionCalls, 1);
 });

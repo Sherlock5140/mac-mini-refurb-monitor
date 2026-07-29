@@ -3354,7 +3354,9 @@ async function runTigerairMonitor(env, { force = false } = {}) {
     });
     if (recovered) events.unshift(recovered);
 
-    attachVerifiedSource(events, {
+    attachVerifiedSource(events.filter((event) =>
+      ["baseline", "error", "recovered"].includes(event.kind)
+    ), {
       source,
       sourceUrl: TIGERAIR_HOME_URL,
     });
@@ -3982,10 +3984,6 @@ export async function runTigerairSaleOpenReminders(env) {
   if (!result.events.length) {
     return { ok: true, eventCount: 0 };
   }
-  attachVerifiedSource(result.events, {
-    source: "tigerair",
-    sourceUrl: TIGERAIR_HOME_URL,
-  });
   await sendMonitorEvents(env, result.events);
   await persistMonitorProducts(env, result.state, "tigerair");
   console.log(

@@ -698,8 +698,6 @@ export function applyTigerairSaleOpenReminders(
       kind: "backend_test",
       title: "🐯 虎航後端即時資料",
       message: [
-        "Cloudflare 後端主動推送測試",
-        "",
         ...(currentPromotions.length
           ? [
           ...currentPromotions.flatMap((item, index) => [
@@ -733,15 +731,8 @@ export function applyTigerairSaleOpenReminders(
     item.saleOpenNotifiedAt = nowIso;
     events.push({
       kind: "sale_open",
-      title: "⏰ 台灣虎航優惠開始販售",
-      message: [
-        item.name,
-        "",
-        `開賣時間：${formatTigerairTaipeiTime(
-          item.saleStartAt,
-        )}`,
-        "現在可前往官方頁面查看並購票。",
-      ].join("\n"),
+      title: "⏰ 虎航優惠開始販售",
+      message: formatTigerairPromotionMessage(item),
       url: item.url,
       disablePreview: false,
     });
@@ -750,47 +741,35 @@ export function applyTigerairSaleOpenReminders(
 }
 
 export function buildTigerairBaselineEvent(snapshot) {
-  const promotions = snapshot.targetProducts.slice(0, 5);
+  const promotions = snapshot.targetProducts.slice(0, 1);
   if (!promotions.length) return null;
+  const item = promotions[0];
   return {
     kind: "baseline",
     title: "✅ 台灣虎航優惠監控已啟用",
     message: [
-      "已建立官方來源基準，之後只推播新增或更新。",
+      formatTigerairPromotionMessage(item),
       "",
-      ...promotions.flatMap((item, index) => [
-        `${index + 1}. ${item.name}`,
-        item.url,
-      ]),
+      "之後只推播新增、更新或開賣提醒。",
     ].join("\n"),
-    url: promotions[0].url,
+    url: item.url,
     disablePreview: false,
   };
 }
 
 export function formatTigerairSummary(snapshot, verifiedAt) {
-  const promotions = snapshot.targetProducts.slice(0, 8);
+  const item = snapshot.targetProducts[0];
+  if (!item) {
+    return [
+      "🐯 虎航最新優惠",
+      "",
+      "目前官網沒有辨識到符合條件的航線票價優惠。",
+    ].join("\n");
+  }
   return [
-    "✈️ 台灣虎航官方優惠",
+    "🐯 虎航最新優惠",
     "",
-    "重點關注：高雄－首爾（金浦／KHH–GMP）",
-    `目前辨識：${snapshot.targetProducts.length} 項`,
-    ...(promotions.length
-      ? promotions.flatMap((item, index) => [
-          "",
-          `${index + 1}. ${item.name}`,
-          ...(item.description ? [item.description] : []),
-          ...(item.saleStartAt
-            ? [
-                `開賣：${formatTigerairTaipeiTime(
-                  item.saleStartAt,
-                )}`,
-              ]
-            : []),
-          item.url,
-        ])
-      : ["", "目前官網沒有辨識到新的機票優惠。"]),
-    "",
-    `查詢時間：${verifiedAt}`,
+    formatTigerairPromotionMessage(item),
+    `官方連結：${item.url}`,
   ].join("\n");
 }

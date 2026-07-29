@@ -201,7 +201,12 @@ test("parses a verified Taipei sale schedule and reminds exactly once", () => {
   assert.equal(early.events.length, 0);
   assert.equal(opened.events.length, 1);
   assert.equal(opened.events[0].kind, "sale_open");
-  assert.match(opened.events[0].message, /2026\/07\/29 10:00/);
+  assert.match(opened.events[0].message, /2026\/7\/29 10:00/);
+  assert.match(opened.events[0].message, /票價／航線：/);
+  assert.doesNotMatch(
+    opened.events[0].message,
+    /現在可前往|擷取方式|驗證時間/,
+  );
   assert.equal(repeated.events.length, 0);
 });
 
