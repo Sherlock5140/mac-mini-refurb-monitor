@@ -211,15 +211,18 @@ function displayItem(item, { includeStatus = false } = {}) {
   return details.join("｜");
 }
 
-function catalogUpdateEvent(changes, snapshot) {
-  const visible = changes.slice(0, MAX_NOTIFICATION_CHANGES);
-  const remaining = changes.length - visible.length;
+function catalogUpdateEvent(newValidItems, snapshot) {
+  const visible = newValidItems
+    .slice(0, MAX_NOTIFICATION_CHANGES)
+    .map((item) => `新增：${displayItem(item)}`);
+  const remaining = newValidItems.length - visible.length;
   return {
     kind: "catalog_update",
-    title: "🔎 ChatGPT Business 公開優惠清單更新",
+    title: "🆕 ChatGPT Business 公開優惠",
     message: [
       `清單日期：${snapshot.lastUpdated}`,
-      `狀態：社群公開清單，未經 OpenAI 官方驗證`,
+      "條件：系統首次發現，且社群清單當下標示有效",
+      "狀態：社群公開清單，未經 OpenAI 官方驗證",
       "",
       ...visible,
       ...(remaining > 0 ? [`…另有 ${remaining} 項變更`] : []),
@@ -239,7 +242,7 @@ export function applyChatgptPromoUpdates(state, snapshot, nowIso) {
   const current = new Map(
     snapshot.targetProducts.map((item) => [item.sku, clone(item)]),
   );
-  const changes = [];
+  const newValidItems = [];
 
   if (!updated.initialized) {
     for (const [sku, item] of current) {
@@ -265,46 +268,31 @@ export function applyChatgptPromoUpdates(state, snapshot, nowIso) {
         present: true,
         firstSeenAt: nowIso,
         lastSeenAt: nowIso,
-        recentEligible: true,
+        recentEligible: observed.status === "valid",
       };
-      changes.push(
-        observed.status === "expired"
-          ? `失效紀錄新增：${displayItem(observed)}`
-          : `新增：${displayItem(observed)}`,
-      );
+      if (observed.status === "valid") newValidItems.push(observed);
       continue;
     }
-    const wasPresent = Boolean(stored.present);
-    const previousStatus = stored.status;
-    const previousFingerprint = stored.fingerprint;
     Object.assign(stored, clone(observed), {
       present: true,
       lastSeenAt: nowIso,
     });
-    if (!wasPresent) {
-      changes.push(`重新出現：${displayItem(observed, { includeStatus: true })}`);
-    } else if (previousStatus !== observed.status) {
-      changes.push(
-        observed.status === "expired"
-          ? `已列為失效：${displayItem(observed)}`
-          : `恢復有效清單：${displayItem(observed)}`,
-      );
-    } else if (previousFingerprint !== observed.fingerprint) {
-      changes.push(`資料變更：${displayItem(observed, { includeStatus: true })}`);
-    }
+    if (observed.status === "expired") stored.recentEligible = false;
   }
 
   for (const [sku, stored] of Object.entries(updated.products)) {
     if (current.has(sku) || !stored.present) continue;
     stored.present = false;
     stored.lastSeenAt = nowIso;
-    changes.push(`清單移除：${displayItem(stored, { includeStatus: true })}`);
+    stored.recentEligible = false;
   }
   updated.consecutiveErrors = 0;
   updated.lastError = null;
   return {
     state: updated,
-    events: changes.length ? [catalogUpdateEvent(changes, snapshot)] : [],
+    events: newValidItems.length
+      ? [catalogUpdateEvent(newValidItems, snapshot)]
+      : [],
   };
 }
 
@@ -318,7 +306,8 @@ export function buildChatgptPromoBaselineEvent(snapshot) {
       `地區：${snapshot.regionCount} 個`,
       `失效紀錄：${snapshot.expiredCount} 項`,
       "",
-      "已把公開清單建立為 D1 比對基準；新增、失效、移除或資料變更才通知。",
+      "已把公開清單建立為 D1 比對基準。",
+      "只有首次發現且清單當下標示有效的代碼會通知；失效、移除與舊資料變更僅更新紀錄。",
       "所有項目均屬社群資料，未經 OpenAI 官方驗證。",
     ].join("\n"),
     url: CHATGPT_PROMO_CATALOG_URL,

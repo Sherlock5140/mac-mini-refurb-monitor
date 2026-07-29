@@ -99,7 +99,7 @@ test("rejects malformed, duplicated, and oversized catalogs", () => {
   );
 });
 
-test("creates a baseline then aggregates new, changed, expired, and removed entries", () => {
+test("notifies only a newly discovered code currently marked valid", () => {
   const firstSnapshot = parseChatgptPromoCatalog(catalog);
   const baseline = applyChatgptPromoUpdates(
     emptyMonitorState(),
@@ -144,9 +144,47 @@ test("creates a baseline then aggregates new, changed, expired, and removed entr
   );
   assert.equal(changed.events.length, 1);
   assert.match(changed.events[0].message, /新增：US｜newus/);
-  assert.match(changed.events[0].message, /已列為失效：US｜publicus/);
-  assert.match(changed.events[0].message, /清單移除：JP｜publicjp/);
+  assert.doesNotMatch(changed.events[0].message, /publicus/);
+  assert.doesNotMatch(changed.events[0].message, /publicjp/);
+  assert.equal(
+    changed.state.products["US:publicus"].recentEligible,
+    false,
+  );
+  assert.equal(
+    changed.state.products["JP:publicjp"].recentEligible,
+    false,
+  );
   assert.equal(repeated.events.length, 0);
+});
+
+test("stores expired and changed records without sending promotion alerts", () => {
+  const baseline = applyChatgptPromoUpdates(
+    emptyMonitorState(),
+    parseChatgptPromoCatalog(catalog),
+    "2026-07-29T01:05:00.000Z",
+  );
+  const nextCatalog = structuredClone(catalog);
+  nextCatalog.valid.US[0].price_usd = 18;
+  nextCatalog.expired.push({
+    code: "expiredjp",
+    region: "JP",
+    company: "Expired Japan",
+  });
+  const result = applyChatgptPromoUpdates(
+    baseline.state,
+    parseChatgptPromoCatalog(nextCatalog),
+    "2026-07-29T02:05:00.000Z",
+  );
+
+  assert.equal(result.events.length, 0);
+  assert.equal(
+    result.state.products["JP:expiredjp"].recentEligible,
+    false,
+  );
+  assert.equal(
+    result.state.products["US:publicus"].priceUsd,
+    18,
+  );
 });
 
 test("parses recent, regional, and explicit full catalog queries", () => {
@@ -221,7 +259,7 @@ test("recent summary excludes the old baseline and expired time window", () => {
   assert.match(all, /oldgb/);
 });
 
-test("reports changed public price metadata without claiming eligibility", () => {
+test("does not promote changed metadata on an existing public code", () => {
   const first = parseChatgptPromoCatalog(catalog);
   const baseline = applyChatgptPromoUpdates(
     emptyMonitorState(),
@@ -236,8 +274,7 @@ test("reports changed public price metadata without claiming eligibility", () =>
     "2026-07-29T01:35:00.000Z",
   );
 
-  assert.match(changed.events[0].message, /資料變更：US｜publicus/);
-  assert.match(changed.events[0].message, /未經 OpenAI 官方驗證/);
+  assert.equal(changed.events.length, 0);
 });
 
 test("formats all regions or one requested region within Telegram limits", () => {
@@ -261,4 +298,5 @@ test("formats all regions or one requested region within Telegram limits", () =>
   assert.doesNotMatch(us, /publicjp/);
   assert.ok(all.length < 4_096);
   assert.match(baseline.message, /公開有效項目：2 項/);
+  assert.match(baseline.message, /只有首次發現且清單當下標示有效/);
 });
