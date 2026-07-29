@@ -1087,6 +1087,61 @@ test("answers check commands with live Apple data", async () => {
   assert.match(reply, /購買頁/);
 });
 
+test("immediate Apple lookup retries an incomplete first response", async () => {
+  let fetchCalls = 0;
+  const flakyFetch = async () => {
+    fetchCalls += 1;
+    return new Response(
+      fetchCalls === 1
+        ? "<html><body>Apple Store</body></html>"
+        : sampleHtml,
+      {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      },
+    );
+  };
+
+  const reply = await replyForCommand("/check", flakyFetch);
+  assert.match(reply, /符合條件：1 項/);
+  assert.equal(fetchCalls, 2);
+});
+
+test("immediate Apple lookup falls back to Browser Run after two incomplete responses", async () => {
+  let fetchCalls = 0;
+  let browserCalls = 0;
+  const incompleteFetch = async () => {
+    fetchCalls += 1;
+    return new Response("<html><body>Apple Store</body></html>", {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+  };
+  const fakeBrowser = {
+    quickAction: async () => {
+      browserCalls += 1;
+      return Response.json({
+        success: true,
+        result: sampleHtml,
+        meta: {
+          status: 200,
+          url: APPLE_REFURB_URL,
+        },
+      });
+    },
+  };
+
+  const reply = await replyForCommand(
+    "/check",
+    incompleteFetch,
+    null,
+    fakeBrowser,
+  );
+  assert.match(reply, /符合條件：1 項/);
+  assert.equal(fetchCalls, 2);
+  assert.equal(browserCalls, 1);
+});
+
 test("answers Costco commands with live Costco data", async () => {
   const fakeFetch = async () =>
     Response.json(costcoApiPayload, {

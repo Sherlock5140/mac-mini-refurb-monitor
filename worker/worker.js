@@ -1526,34 +1526,101 @@ function helpMessage() {
   ].join("\n");
 }
 
-async function fetchInventory(fetchImpl, ai = null) {
-  const response = await fetchImpl(APPLE_REFURB_URL, {
-    headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
-      "Cache-Control": "no-cache",
-      "User-Agent":
-        "Mozilla/5.0 AppleWebKit/537.36 mac-mini-refurb-monitor-worker/1.0",
+async function fetchAppleBrowserHtml(browser) {
+  if (!browser?.quickAction) return null;
+  const response = await browser.quickAction("content", {
+    url: APPLE_REFURB_URL,
+    gotoOptions: {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
     },
-    cf: {
-      cacheEverything: true,
-      cacheTtl: 60,
-    },
+    rejectResourceTypes: [
+      "image",
+      "media",
+      "font",
+      "stylesheet",
+    ],
   });
   if (!response.ok) {
-    throw new Error(`Apple HTTP ${response.status}`);
+    throw new Error(`Apple Browser Run HTTP ${response.status}`);
   }
+  const payload = await response.json().catch(() => null);
   assertVerifiedSourceUrl(
     "apple",
-    response.url || APPLE_REFURB_URL,
+    payload?.meta?.url || APPLE_REFURB_URL,
   );
-  const html = await response.text();
-  return parseWithAiDiagnostics({
-    ai,
-    source: "Apple",
-    html,
-    parser: parseAppleInventory,
-  });
+  if (
+    payload?.success !== true ||
+    payload?.meta?.status !== 200 ||
+    typeof payload?.result !== "string" ||
+    !payload.result
+  ) {
+    throw new Error(
+      `Apple Browser Run 載入失敗（HTTP ${
+        payload?.meta?.status ?? "unknown"
+      }）`,
+    );
+  }
+  return payload.result;
+}
+
+async function fetchInventory(
+  fetchImpl,
+  ai = null,
+  browser = null,
+) {
+  let lastHtml = "";
+  let lastError = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await fetchImpl(APPLE_REFURB_URL, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+          "Cache-Control": "no-cache, no-store",
+          Pragma: "no-cache",
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) " +
+            "Version/18.5 Safari/605.1.15",
+        },
+        cf: {
+          cacheTtl: 0,
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Apple HTTP ${response.status}`);
+      }
+      assertVerifiedSourceUrl(
+        "apple",
+        response.url || APPLE_REFURB_URL,
+      );
+      lastHtml = await response.text();
+      return parseAppleInventory(lastHtml);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  try {
+    const browserHtml = await fetchAppleBrowserHtml(browser);
+    if (browserHtml) {
+      lastHtml = browserHtml;
+      return parseAppleInventory(browserHtml);
+    }
+  } catch (error) {
+    lastError = error;
+  }
+
+  if (lastHtml) {
+    return parseWithAiDiagnostics({
+      ai,
+      source: "Apple",
+      html: lastHtml,
+      parser: parseAppleInventory,
+    });
+  }
+  throw lastError ?? new Error("Apple 頁面載入失敗");
 }
 
 async function fetchCostcoInventory(fetchImpl, ai = null) {
@@ -2696,7 +2763,7 @@ export async function replyForCommand(
     return `Apple 台灣整修 Mac 購買頁：\n${APPLE_REFURB_URL}`;
   }
   if (command === "/status") {
-    const snapshot = await fetchInventory(fetchImpl, ai);
+    const snapshot = await fetchInventory(fetchImpl, ai, browser);
     const monitor = statusProvider ? await statusProvider() : null;
     const appleMonitor = monitor?.apple ?? monitor;
     const costcoMonitor = monitor?.costco;
@@ -2737,10 +2804,14 @@ export async function replyForCommand(
     ].join("\n");
   }
   if (command === "/check") {
-    return formatInventorySummary(await fetchInventory(fetchImpl, ai));
+    return formatInventorySummary(
+      await fetchInventory(fetchImpl, ai, browser),
+    );
   }
   if (command === "/buy") {
-    return formatPurchaseMessage(await fetchInventory(fetchImpl, ai));
+    return formatPurchaseMessage(
+      await fetchInventory(fetchImpl, ai, browser),
+    );
   }
   if (command === "/costco") {
     return formatCostcoSummary(
@@ -3055,7 +3126,7 @@ export function buildTestNotificationEvent(
 async function sendTestNotification(env) {
   const [snapshot, costcoSnapshot, pchomeSnapshot] =
     await Promise.all([
-      fetchInventory(fetch, env.AI),
+      fetchInventory(fetch, env.AI, env.BROWSER),
       fetchCostcoInventory(fetch, env.AI),
       fetchPchomeInventory(fetch, env.AI),
     ]);
@@ -3947,7 +4018,8 @@ function fixedMonitorDefinitions(env) {
       label: "Apple M4 Mac mini",
       sourceName: "Apple",
       purchaseUrl: APPLE_REFURB_URL,
-      fetchSnapshot: (fetchImpl) => fetchInventory(fetchImpl, env.AI),
+      fetchSnapshot: (fetchImpl) =>
+        fetchInventory(fetchImpl, env.AI, env.BROWSER),
       formatSummary: formatInventorySummary,
     },
     {
