@@ -8,6 +8,7 @@ export const OPENAI_PROMO_TERMS_URL =
 const MAX_CATALOG_ENTRIES = 500;
 const MAX_NOTIFICATION_CHANGES = 12;
 const MAX_SUMMARY_LENGTH = 3_700;
+export const CHATGPT_PROMO_DEFAULT_RECENT_HOURS = 24 * 7;
 
 function normalizeText(value, maxLength = 160) {
   return String(value ?? "")
@@ -19,6 +20,43 @@ function normalizeText(value, maxLength = 160) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+export function parseChatgptPromoQuery(value) {
+  const tokens = normalizeText(value, 200)
+    .split(/\s+/)
+    .slice(1);
+  let region = "";
+  let includeAll = false;
+  let maxAgeHours = CHATGPT_PROMO_DEFAULT_RECENT_HOURS;
+
+  for (const rawToken of tokens) {
+    const token = rawToken.toLowerCase();
+    if (["all", "全部", "完整"].includes(token)) {
+      includeAll = true;
+      continue;
+    }
+    if (/^[a-z]{2}$/.test(token) && !region) {
+      region = token.toUpperCase();
+      continue;
+    }
+    const duration = token.match(/^(\d{1,3})(h|d|小時|天)$/);
+    if (duration) {
+      const amount = Number(duration[1]);
+      const unit = duration[2];
+      const hours = ["d", "天"].includes(unit) ? amount * 24 : amount;
+      if (hours < 1 || hours > 24 * 30) {
+        throw new Error("查詢期間必須介於 1 小時至 30 天");
+      }
+      maxAgeHours = hours;
+      includeAll = false;
+      continue;
+    }
+    throw new Error(
+      "格式：/gptpromo [地區碼] [7d]；完整清單請用 /gptpromo all",
+    );
+  }
+  return { region, includeAll, maxAgeHours };
 }
 
 export function assertChatgptPromoCatalogUrl(value) {
@@ -210,6 +248,7 @@ export function applyChatgptPromoUpdates(state, snapshot, nowIso) {
         present: true,
         firstSeenAt: nowIso,
         lastSeenAt: nowIso,
+        recentEligible: false,
       };
     }
     updated.initialized = true;
@@ -226,6 +265,7 @@ export function applyChatgptPromoUpdates(state, snapshot, nowIso) {
         present: true,
         firstSeenAt: nowIso,
         lastSeenAt: nowIso,
+        recentEligible: true,
       };
       changes.push(
         observed.status === "expired"
@@ -290,23 +330,46 @@ export function formatChatgptPromoSummary(
   snapshot,
   checkedAt,
   requestedRegion = "",
+  {
+    products = {},
+    includeAll = true,
+    maxAgeHours = CHATGPT_PROMO_DEFAULT_RECENT_HOURS,
+    nowIso = new Date().toISOString(),
+  } = {},
 ) {
   const region = normalizeText(requestedRegion, 8).toUpperCase();
+  const nowMs = Date.parse(nowIso);
+  const isRecent = (item) => {
+    if (includeAll) return true;
+    const stored = products[item.sku];
+    if (!stored) return true;
+    if (stored.recentEligible !== true) return false;
+    const firstSeenMs = Date.parse(stored.firstSeenAt);
+    if (!Number.isFinite(nowMs) || !Number.isFinite(firstSeenMs)) return false;
+    const ageMs = nowMs - firstSeenMs;
+    return ageMs >= 0 && ageMs <= maxAgeHours * 60 * 60 * 1_000;
+  };
   const validItems = snapshot.targetProducts.filter(
     (item) =>
       item.status === "valid" &&
-      (!region || item.region === region),
+      (!region || item.region === region) &&
+      isRecent(item),
   );
   const expiredItems = snapshot.targetProducts.filter(
     (item) =>
       item.status === "expired" &&
-      (!region || item.region === region),
+      (!region || item.region === region) &&
+      isRecent(item),
   );
+  const periodLabel = maxAgeHours % 24 === 0
+    ? `${maxAgeHours / 24} 天`
+    : `${maxAgeHours} 小時`;
   const lines = [
     "🔎 ChatGPT Business 公開優惠清單",
     "",
     `清單日期：${snapshot.lastUpdated}`,
-    `範圍：${region || "全部地區"}`,
+    `地區：${region || "全部地區"}`,
+    `時間範圍：${includeAll ? "完整公開清單" : `最近 ${periodLabel}新發現`}`,
     `公開有效：${validItems.length} 項`,
     "狀態：社群公開清單，未經 OpenAI 官方驗證",
     "",
@@ -326,7 +389,11 @@ export function formatChatgptPromoSummary(
     }
   }
   if (!validItems.length && !expiredItems.length) {
-    lines.push("這個地區目前沒有公開項目。");
+    lines.push(
+      includeAll
+        ? "這個地區目前沒有公開項目。"
+        : `最近 ${periodLabel}沒有新發現的公開項目。`,
+    );
   }
   lines.push(
     "",

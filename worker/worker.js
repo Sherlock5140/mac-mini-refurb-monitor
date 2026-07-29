@@ -42,6 +42,7 @@ import {
   buildChatgptPromoBaselineEvent,
   formatChatgptPromoSummary,
   parseChatgptPromoCatalog,
+  parseChatgptPromoQuery,
 } from "./chatgpt-promotions.js";
 import {
   DOCTOR_OF_CREDIT_API_URL,
@@ -1305,7 +1306,8 @@ function helpMessage() {
     "/coupang－立即查詢酷澎庫存、價格與購買連結",
     "/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格",
     "/tigerair－立即查詢台灣虎航官方優惠",
-    "/gptpromo [地區碼]－查詢 ChatGPT Business 公開優惠清單",
+    "/gptpromo [地區碼] [7d]－查最近新發現的 Business 優惠",
+    "/gptpromo all－查詢完整公開清單",
     "/docpromo－查詢 Doctor of Credit 指定優惠文章",
     "/buy－列出符合條件的商品與購買連結",
     "/status－確認所有商品與購物站的排程狀態",
@@ -2534,14 +2536,19 @@ export async function replyForCommand(
     );
   }
   if (command === "/gptpromo") {
-    const region = normalizeText(text)
-      .split(/\s+/)
-      .slice(1)
-      .join(" ");
+    const query = parseChatgptPromoQuery(text);
+    const state = env?.MONITOR_DB
+      ? await loadMonitorState(env, "chatgptPromo")
+      : { products: {} };
     return formatChatgptPromoSummary(
       await fetchChatgptPromoUpdates(fetchImpl),
       taipeiTime(),
-      region,
+      query.region,
+      {
+        products: state.products,
+        includeAll: query.includeAll,
+        maxAgeHours: query.maxAgeHours,
+      },
     );
   }
   if (command === "/docpromo") {

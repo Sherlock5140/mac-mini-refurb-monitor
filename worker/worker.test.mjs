@@ -1295,7 +1295,8 @@ test("queries and filters the public ChatGPT Business catalog", async () => {
   const reply = await replyForCommand("/gptpromo US", fakeFetch);
 
   assert.match(reply, /ChatGPT Business 公開優惠清單/);
-  assert.match(reply, /範圍：US/);
+  assert.match(reply, /地區：US/);
+  assert.match(reply, /最近 7 天新發現/);
   assert.match(reply, /publicus/);
   assert.doesNotMatch(reply, /publicjp/);
   assert.match(reply, /未經 OpenAI 官方驗證/);
@@ -1338,7 +1339,8 @@ test("lists the active notification test command", async () => {
   assert.match(reply, /\/coupang－立即查詢酷澎庫存、價格與購買連結/);
   assert.match(reply, /\/sony－立即查詢酷澎銀色 Sony WH-1000XM6 價格/);
   assert.match(reply, /\/tigerair－立即查詢台灣虎航官方優惠/);
-  assert.match(reply, /\/gptpromo \[地區碼\]－查詢 ChatGPT Business 公開優惠清單/);
+  assert.match(reply, /\/gptpromo \[地區碼\] \[7d\]－查最近新發現/);
+  assert.match(reply, /\/gptpromo all－查詢完整公開清單/);
   assert.match(reply, /\/docpromo－查詢 Doctor of Credit 指定優惠文章/);
   assert.match(reply, /\/errors－查看目前異常與自動修復狀態/);
   assert.match(reply, /\/retry 目標－立即重試一次指定監控/);

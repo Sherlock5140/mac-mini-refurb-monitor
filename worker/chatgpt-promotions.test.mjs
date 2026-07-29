@@ -8,6 +8,7 @@ import {
   assertChatgptPromoCatalogUrl,
   buildChatgptPromoBaselineEvent,
   formatChatgptPromoSummary,
+  parseChatgptPromoQuery,
   parseChatgptPromoCatalog,
 } from "./chatgpt-promotions.js";
 
@@ -133,11 +134,91 @@ test("creates a baseline then aggregates new, changed, expired, and removed entr
   );
 
   assert.equal(baseline.events.length, 0);
+  assert.equal(
+    baseline.state.products["US:publicus"].recentEligible,
+    false,
+  );
+  assert.equal(
+    changed.state.products["US:newus"].recentEligible,
+    true,
+  );
   assert.equal(changed.events.length, 1);
   assert.match(changed.events[0].message, /新增：US｜newus/);
   assert.match(changed.events[0].message, /已列為失效：US｜publicus/);
   assert.match(changed.events[0].message, /清單移除：JP｜publicjp/);
   assert.equal(repeated.events.length, 0);
+});
+
+test("parses recent, regional, and explicit full catalog queries", () => {
+  assert.deepEqual(parseChatgptPromoQuery("/gptpromo"), {
+    region: "",
+    includeAll: false,
+    maxAgeHours: 168,
+  });
+  assert.deepEqual(parseChatgptPromoQuery("/gptpromo US 3d"), {
+    region: "US",
+    includeAll: false,
+    maxAgeHours: 72,
+  });
+  assert.deepEqual(parseChatgptPromoQuery("/gptpromo all"), {
+    region: "",
+    includeAll: true,
+    maxAgeHours: 168,
+  });
+  assert.throws(
+    () => parseChatgptPromoQuery("/gptpromo 31d"),
+    /1 小時至 30 天/,
+  );
+});
+
+test("recent summary excludes the old baseline and expired time window", () => {
+  const snapshot = parseChatgptPromoCatalog(catalog);
+  const state = applyChatgptPromoUpdates(
+    emptyMonitorState(),
+    snapshot,
+    "2026-07-20T01:00:00.000Z",
+  ).state;
+  const recentCatalog = structuredClone(catalog);
+  recentCatalog.valid.US.push({
+    code: "freshus",
+    company: "Fresh Company",
+    price_usd: 25,
+  });
+  const updatedSnapshot = parseChatgptPromoCatalog(recentCatalog);
+  const updatedState = applyChatgptPromoUpdates(
+    state,
+    updatedSnapshot,
+    "2026-07-29T01:00:00.000Z",
+  ).state;
+  const recent = formatChatgptPromoSummary(
+    updatedSnapshot,
+    "2026/7/29 09:30",
+    "",
+    {
+      products: updatedState.products,
+      includeAll: false,
+      maxAgeHours: 168,
+      nowIso: "2026-07-29T02:00:00.000Z",
+    },
+  );
+  const all = formatChatgptPromoSummary(
+    updatedSnapshot,
+    "2026/7/29 09:30",
+    "",
+    {
+      products: updatedState.products,
+      includeAll: true,
+      nowIso: "2026-07-29T02:00:00.000Z",
+    },
+  );
+
+  assert.match(recent, /最近 7 天新發現/);
+  assert.match(recent, /freshus/);
+  assert.doesNotMatch(recent, /publicus/);
+  assert.doesNotMatch(recent, /oldgb/);
+  assert.match(all, /完整公開清單/);
+  assert.match(all, /publicus/);
+  assert.match(all, /oldgb/);
 });
 
 test("reports changed public price metadata without claiming eligibility", () => {
@@ -175,7 +256,7 @@ test("formats all regions or one requested region within Telegram limits", () =>
   assert.match(all, /【JP】/);
   assert.match(all, /【US】/);
   assert.match(all, /oldgb.*已列為失效/);
-  assert.match(us, /範圍：US/);
+  assert.match(us, /地區：US/);
   assert.match(us, /publicus/);
   assert.doesNotMatch(us, /publicjp/);
   assert.ok(all.length < 4_096);
