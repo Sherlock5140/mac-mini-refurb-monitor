@@ -210,6 +210,38 @@ test("parses a verified Taipei sale schedule and reminds exactly once", () => {
   assert.equal(repeated.events.length, 0);
 });
 
+test("parses date-only travel periods from an official promotion image", () => {
+  const schedule = parseTigerairSaleScheduleText(`
+    SALE_START=2026-07-29 10:00
+    SALE_END=2026-07-30 23:59
+    TRAVEL_START=2026-07-29
+    TRAVEL_END=2026-10-24
+  `);
+
+  assert.deepEqual(schedule, {
+    saleStartAt: "2026-07-29T02:00:00.000Z",
+    saleEndAt: "2026-07-30T15:59:00.000Z",
+    travelStartAt: "2026-07-28T16:00:00.000Z",
+    travelEndAt: "2026-10-24T15:59:00.000Z",
+  });
+});
+
+test("missing Tigerair dates use safe fallbacks and never render 1970", () => {
+  const message = formatTigerairPromotionMessage({
+    name: "🐯 世界老虎日全航線優惠 TWD 1,199 起",
+    description: "全航線 TWD 1,199 起",
+    saleStartAt: "2026-07-29T02:00:00.000Z",
+    saleEndAt: null,
+    travelStartAt: null,
+    travelEndAt: null,
+  });
+
+  assert.match(message, /活動：世界老虎日/);
+  assert.match(message, /銷售：2026\/7\/29 10:00 起/);
+  assert.match(message, /旅遊期間：以官方公告為準/);
+  assert.doesNotMatch(message, /1970/);
+});
+
 test("formats fare notifications as the requested compact four-line notice", () => {
   const message = formatTigerairPromotionMessage({
     name: "冬季航班開賣第 3 波",

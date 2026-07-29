@@ -23,6 +23,7 @@ import {
 import {
   TIGERAIR_BANNERS_API_URL,
   TIGERAIR_HOME_URL,
+  TIGERAIR_SCHEDULE_PARSER_VERSION,
   applyTigerairPromotions,
   applyTigerairSaleOpenReminders,
   assertTigerairBannerFeedUrl,
@@ -1759,6 +1760,8 @@ async function enrichTigerairSaleSchedules(
     const stored = previousProducts?.[item.sku];
     if (
       stored?.saleScheduleCheckedAt &&
+      stored.saleScheduleParserVersion ===
+        TIGERAIR_SCHEDULE_PARSER_VERSION &&
       stored.imageUrl &&
       stored.imageUrl === item.imageUrl
     ) {
@@ -1835,14 +1838,18 @@ async function enrichTigerairSaleSchedules(
             task: "query",
             image,
             question: [
-              "OCR the exact airfare PURCHASE SALE START date and time.",
-              "Do not use the travel period or sale end date.",
-              "Return only SALE_START=YYYY-MM-DD HH:mm.",
+              "OCR the exact airfare sale period and travel period from this official promotion image.",
+              "Return exactly four lines:",
+              "SALE_START=YYYY-MM-DD HH:mm or UNKNOWN",
+              "SALE_END=YYYY-MM-DD HH:mm or UNKNOWN",
+              "TRAVEL_START=YYYY-MM-DD or UNKNOWN",
+              "TRAVEL_END=YYYY-MM-DD or UNKNOWN",
+              "Keep sale dates separate from travel dates.",
               "Use Asia/Taipei local time and do not guess.",
             ].join("\n"),
             reasoning: false,
             temperature: 0,
-            max_tokens: 80,
+            max_tokens: 160,
             stream: false,
           });
           break;
@@ -1858,9 +1865,7 @@ async function enrichTigerairSaleSchedules(
       const parsed = parseTigerairSaleScheduleText(
         result?.answer ?? result?.result?.answer,
       );
-      const schedule = parsed
-        ? { saleStartAt: parsed.saleStartAt }
-        : null;
+      const schedule = parsed;
       if (!schedule) {
         throw new Error("圖片未辨識到可驗證的開賣起始時間");
       }

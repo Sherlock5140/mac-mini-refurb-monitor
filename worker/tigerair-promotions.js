@@ -3,6 +3,7 @@ export const TIGERAIR_HOME_URL =
 export const TIGERAIR_BANNERS_API_URL =
   "https://api-cms.tigerairtw.com/api/home-banners?language=zh-TW&perPage=100";
 export const TIGERAIR_TIME_ZONE = "Asia/Taipei";
+export const TIGERAIR_SCHEDULE_PARSER_VERSION = 2;
 
 const PROMOTION_TERMS =
   /促銷|優惠|特惠|開賣|快閃|折扣|未稅|(?:TWD|NT\$?)\s*[\d,]+\s*起|\d+(?:\.\d+)?\s*折|票價.*起|機票.*(?:起|優惠)/i;
@@ -134,6 +135,8 @@ function offerFingerprint(offer) {
     offer.imageUrl ?? "",
     offer.saleStartAt ?? "",
     offer.saleEndAt ?? "",
+    offer.travelStartAt ?? "",
+    offer.travelEndAt ?? "",
   ].join("|");
 }
 
@@ -495,13 +498,21 @@ function taipeiLocalIso(dateText, timeText) {
   return iso.toISOString();
 }
 
-function scheduleValue(text, key) {
+function scheduleValue(
+  text,
+  key,
+  { dateOnly = false, endOfDay = false } = {},
+) {
   const normalized = String(text ?? "")
     .replace(/[／]/g, "-")
     .replace(/[：]/g, ":");
   const match = normalized.match(
     new RegExp(
-      `${key}\\s*=\\s*(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})\\s+(\\d{1,2}):(\\d{2})`,
+      `${key}\\s*=\\s*(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})${
+        dateOnly
+          ? "(?:\\s+(\\d{1,2}):(\\d{2}))?"
+          : "\\s+(\\d{1,2}):(\\d{2})"
+      }`,
       "i",
     ),
   );
@@ -513,8 +524,8 @@ function scheduleValue(text, key) {
       match[3].padStart(2, "0"),
     ].join("-"),
     [
-      match[4].padStart(2, "0"),
-      match[5].padStart(2, "0"),
+      String(match[4] ?? (endOfDay ? "23" : "00")).padStart(2, "0"),
+      String(match[5] ?? (endOfDay ? "59" : "00")).padStart(2, "0"),
     ].join(":"),
   );
 }
@@ -523,11 +534,26 @@ export function parseTigerairSaleScheduleText(text) {
   const saleStartAt = scheduleValue(text, "SALE_START");
   if (!saleStartAt) return null;
   const saleEndAt = scheduleValue(text, "SALE_END");
-  const travelStartAt = scheduleValue(text, "TRAVEL_START");
-  const travelEndAt = scheduleValue(text, "TRAVEL_END");
+  const travelStartAt = scheduleValue(
+    text,
+    "TRAVEL_START",
+    { dateOnly: true },
+  );
+  const travelEndAt = scheduleValue(
+    text,
+    "TRAVEL_END",
+    { dateOnly: true, endOfDay: true },
+  );
   if (
     saleEndAt &&
     Date.parse(saleEndAt) < Date.parse(saleStartAt)
+  ) {
+    return null;
+  }
+  if (
+    travelStartAt &&
+    travelEndAt &&
+    Date.parse(travelEndAt) < Date.parse(travelStartAt)
   ) {
     return null;
   }
@@ -548,6 +574,7 @@ export function withTigerairSaleSchedule(
     ...clone(item),
     ...(schedule ?? {}),
     saleScheduleCheckedAt: checkedAt,
+    saleScheduleParserVersion: TIGERAIR_SCHEDULE_PARSER_VERSION,
     saleScheduleSource: schedule
       ? "official-image-workers-ai"
       : "not-found",
@@ -557,6 +584,9 @@ export function withTigerairSaleSchedule(
 }
 
 export function formatTigerairTaipeiTime(value) {
+  if (value === null || value === undefined || value === "") {
+    return "以官方公告為準";
+  }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "時間格式錯誤";
   return new Intl.DateTimeFormat("zh-TW", {
@@ -571,6 +601,9 @@ export function formatTigerairTaipeiTime(value) {
 }
 
 function taipeiDateParts(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -658,8 +691,11 @@ export function isPriorityTigerairRoute(item) {
 }
 
 export function formatTigerairPromotionMessage(item) {
+  const activity = normalizeText(item.name)
+    .replace(/^[🐯🐅\s]+/u, "")
+    .trim();
   return [
-    `活動：${normalizeText(item.name)}`,
+    `活動：${activity || "以官方公告為準"}`,
     `銷售：${compactPeriod(
       item.saleStartAt,
       item.saleEndAt,
