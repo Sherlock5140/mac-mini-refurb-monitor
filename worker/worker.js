@@ -984,6 +984,14 @@ function coupangTargetProduct(product) {
     storageGb: storage,
     memoryGb: memory,
     priceTwd: product.priceTwd,
+    ...(product.priceType === "public_discount"
+      ? {
+          regularPriceTwd: product.regularPriceTwd,
+          discountTwd: product.discountTwd,
+          discountRemainingText: product.discountRemainingText,
+          priceType: product.priceType,
+        }
+      : {}),
     url: product.url,
   };
 }
@@ -1026,15 +1034,22 @@ function parseCoupangCards(html) {
     const priceTwd = priceMatch
       ? Number(priceMatch[1].replaceAll(",", ""))
       : null;
+    const publicDiscount = parseCoupangPublicDiscount(card, priceTwd);
     const itemId = path.match(/[?&]itemId=(\d+)/i)?.[1] ?? null;
     products.push({
       sku: skuMatch[1],
       itemId,
       name,
       url: new URL(path, COUPANG_ORIGIN).href,
-      priceTwd,
+      priceTwd: publicDiscount?.effectivePriceTwd ?? priceTwd,
+      regularPriceTwd:
+        publicDiscount?.regularPriceTwd ?? priceTwd,
+      discountTwd: publicDiscount?.discountTwd ?? null,
+      discountRemainingText:
+        publicDiscount?.discountRemainingText ?? null,
+      priceType: publicDiscount ? "public_discount" : "regular",
       available:
-        Number.isFinite(priceTwd) &&
+        Number.isFinite(publicDiscount?.effectivePriceTwd ?? priceTwd) &&
         !/(?:暫時缺貨|已售完|售罄|sold[\s_-]*out)/i.test(card),
     });
   }
@@ -1042,6 +1057,75 @@ function parseCoupangCards(html) {
     throw new Error("酷澎商品卡片缺少名稱、連結或商品編號");
   }
   return products;
+}
+
+function parseCoupangPublicDiscount(card, fallbackPriceTwd) {
+  const text = decodeHtml(
+    String(card)
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<[^>]*>/g, " "),
+  ).replace(/\s+/g, " ").trim();
+  const labelIndex = text.indexOf("折扣後價格");
+  if (labelIndex < 0) {
+    return null;
+  }
+
+  const amounts = [...text.matchAll(/\$\s*([\d,]+)/g)]
+    .map((match) => ({
+      value: Number(match[1].replaceAll(",", "")),
+      index: match.index ?? -1,
+    }))
+    .filter(({ value }) => Number.isFinite(value) && value > 0);
+  const discountCandidates = amounts
+    .filter(
+      ({ index }) =>
+        index < labelIndex && labelIndex - index <= 80,
+    )
+    .sort((a, b) => b.index - a.index);
+
+  for (const discount of discountCandidates) {
+    const pairs = [];
+    for (const regular of amounts) {
+      for (const effective of amounts) {
+        if (
+          regular.value > effective.value &&
+          regular.value - effective.value === discount.value
+        ) {
+          pairs.push({ regular, effective });
+        }
+      }
+    }
+    pairs.sort((a, b) => {
+      const aFallback =
+        a.regular.value === fallbackPriceTwd ||
+        a.effective.value === fallbackPriceTwd
+          ? 0
+          : 1;
+      const bFallback =
+        b.regular.value === fallbackPriceTwd ||
+        b.effective.value === fallbackPriceTwd
+          ? 0
+          : 1;
+      return (
+        aFallback - bFallback ||
+        Math.abs(a.effective.index - labelIndex) -
+          Math.abs(b.effective.index - labelIndex)
+      );
+    });
+    const verified = pairs[0];
+    if (verified) {
+      const remaining =
+        text.match(/折扣(?:剩下|剩餘)\s*(\d+\s*(?:天|小時|分鐘))/)?.[1] ??
+        null;
+      return {
+        effectivePriceTwd: verified.effective.value,
+        regularPriceTwd: verified.regular.value,
+        discountTwd: discount.value,
+        discountRemainingText: remaining,
+      };
+    }
+  }
+  return null;
 }
 
 export function parseCoupangInventory(html) {
@@ -1092,6 +1176,14 @@ export function parseCoupangSonyInventory(html) {
       name: product.name,
       details: "銀色｜WH-1000XM6｜原廠保固 12 個月",
       priceTwd: product.priceTwd,
+      ...(product.priceType === "public_discount"
+        ? {
+            regularPriceTwd: product.regularPriceTwd,
+            discountTwd: product.discountTwd,
+            discountRemainingText: product.discountRemainingText,
+            priceType: product.priceType,
+          }
+        : {}),
       url: product.url,
     };
     targets.set(target.sku, target);
@@ -1125,6 +1217,14 @@ export function parseCoupangAirpodsInventory(html) {
       name: product.name,
       details: "Apple｜AirPods Pro 3｜白色｜酷澎指定商品",
       priceTwd: product.priceTwd,
+      ...(product.priceType === "public_discount"
+        ? {
+            regularPriceTwd: product.regularPriceTwd,
+            discountTwd: product.discountTwd,
+            discountRemainingText: product.discountRemainingText,
+            priceType: product.priceType,
+          }
+        : {}),
       url: product.url,
     };
     targets.set(target.sku, target);
@@ -1349,10 +1449,22 @@ export function formatCoupangAirpodsSummary(
   { includePurchaseLink = true } = {},
 ) {
   const productLines = snapshot.targetProducts.length
-    ? snapshot.targetProducts.flatMap((product, index) => [
-        `${index + 1}. AirPods Pro 3 白色｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
-        product.url,
-      ])
+    ? snapshot.targetProducts.flatMap((product, index) => {
+        const lines = [
+          `${index + 1}. AirPods Pro 3 白色｜NT$${product.priceTwd.toLocaleString("en-US")}｜有貨`,
+        ];
+        if (product.priceType === "public_discount") {
+          lines.push(
+            `公開折扣價｜一般價 NT$${product.regularPriceTwd.toLocaleString("en-US")}｜現省 NT$${product.discountTwd.toLocaleString("en-US")}${
+              product.discountRemainingText
+                ? `｜剩餘 ${product.discountRemainingText}`
+                : ""
+            }`,
+          );
+        }
+        lines.push(product.url);
+        return lines;
+      })
     : ["目前沒有找到指定的 AirPods Pro 3 白色有貨商品。"];
   const lines = [
     "🎧 酷澎 AirPods Pro 3 降價追蹤",
@@ -1363,7 +1475,8 @@ export function formatCoupangAirpodsSummary(
     "⚙️ 精確條件",
     "Apple｜2025 AirPods Pro 3｜白色｜指定商品編號",
     "排除保護殼、耳機殼、吊飾及其他配件。",
-    "比較公開未登入售價，不含個人首購、會員或信用卡優惠。",
+    "公開折扣後價格可驗證時優先；否則使用一般售價。",
+    "不含個人首購、會員或信用卡優惠。",
     "價格不變不重複通知，只在價格降低時推播。",
     "",
     ...productLines,

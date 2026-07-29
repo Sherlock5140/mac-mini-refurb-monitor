@@ -364,6 +364,7 @@ function coupangCard({
   productId,
   itemId = productId,
   price,
+  publicDiscount = null,
   available = true,
 }) {
   return [
@@ -372,7 +373,15 @@ function coupangCard({
     `<div class="ProductUnit_productNameV2__cV9cw">${name}</div>`,
     '<div class="PriceArea_priceArea__NntJz">',
     available
-      ? `<span translate="no">$${price.toLocaleString("en-US")}</span>`
+      ? publicDiscount
+        ? [
+            `<span class="discount-rate">${publicDiscount.rate ?? 76}折</span>`,
+            `<strong>$${publicDiscount.effectivePrice.toLocaleString("en-US")}</strong>`,
+            `<span>↓ $${publicDiscount.discount.toLocaleString("en-US")} 折扣後價格 · 折扣剩下 ${publicDiscount.remainingDays}天</span>`,
+            `<del>$${publicDiscount.listPrice.toLocaleString("en-US")}</del>`,
+            `<span translate="no">$${price.toLocaleString("en-US")}</span>`,
+          ].join("")
+        : `<span translate="no">$${price.toLocaleString("en-US")}</span>`
       : "<span>暫時缺貨</span>",
     "</div>",
     "</a>",
@@ -432,7 +441,13 @@ const coupangAirpodsHtml = [
     vendorItemId: "595388956377088",
     productId: "595388956377089",
     itemId: "595388956327937",
-    price: 6130,
+    price: 6260,
+    publicDiscount: {
+      effectivePrice: 5634,
+      discount: 626,
+      listPrice: 7490,
+      remainingDays: 2,
+    },
   }),
   coupangCard({
     name: "Daon 時尚 AirPods Pro 3 保護殼",
@@ -952,9 +967,35 @@ test("parses only the exact AirPods Pro 3 product and excludes accessories", () 
     sku: "AIRPODS-595388956327937",
     name: "Apple 2025 AirPods Pro 3, 白色",
     details: "Apple｜AirPods Pro 3｜白色｜酷澎指定商品",
-    priceTwd: 6130,
+    priceTwd: 5634,
+    regularPriceTwd: 6260,
+    discountTwd: 626,
+    discountRemainingText: "2天",
+    priceType: "public_discount",
     url: "https://www.tw.coupang.com/products/595388956377089?itemId=595388956327937&vendorItemId=595388956377088",
   });
+});
+
+test("ignores an unverified Coupang discount label and keeps the regular price", () => {
+  const malformedDiscountHtml = coupangCard({
+    name: "Apple 2025 AirPods Pro 3, 白色",
+    vendorItemId: "595388956377088",
+    productId: "595388956377089",
+    itemId: "595388956327937",
+    price: 6260,
+    publicDiscount: {
+      effectivePrice: 5600,
+      discount: 626,
+      listPrice: 7490,
+      remainingDays: 2,
+    },
+  });
+
+  const snapshot = parseCoupangAirpodsInventory(
+    malformedDiscountHtml,
+  );
+  assert.equal(snapshot.targetProducts[0].priceTwd, 6260);
+  assert.equal(snapshot.targetProducts[0].priceType, undefined);
 });
 
 test("formats the AirPods Pro 3 price tracker and direct purchase link", () => {
@@ -963,7 +1004,10 @@ test("formats the AirPods Pro 3 price tracker and direct purchase link", () => {
   );
 
   assert.match(summary, /AirPods Pro 3 降價追蹤/);
-  assert.match(summary, /NT\$6,130/);
+  assert.match(summary, /NT\$5,634/);
+  assert.match(summary, /一般價 NT\$6,260/);
+  assert.match(summary, /現省 NT\$626/);
+  assert.match(summary, /剩餘 2天/);
   assert.match(summary, /排除保護殼、耳機殼/);
   assert.match(summary, /價格不變不重複通知/);
   assert.ok(summary.includes(COUPANG_AIRPODS_SEARCH_URL));
@@ -1146,7 +1190,8 @@ test("answers AirPods commands through Cloudflare Browser Run", async () => {
   );
 
   assert.match(reply, /AirPods Pro 3 降價追蹤/);
-  assert.match(reply, /NT\$6,130/);
+  assert.match(reply, /NT\$5,634/);
+  assert.match(reply, /一般價 NT\$6,260/);
 });
 
 test("answers Tigerair commands from verified official offers", async () => {
